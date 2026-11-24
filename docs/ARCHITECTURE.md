@@ -1,6 +1,7 @@
 # 系统架构与演进路线（Nexys 4 DDR）
 
 > 状态：项目立项规划草案（详细地址映射、JA+JB Pmod OV5640 引脚表与时钟树待下一轮细化定稿）。
+> 语言约束：**全工程统一使用纯 Verilog-2001/2005（`.v` + `.vh`）**，杜绝 SystemVerilog 语法，确保 Vivado / ModelSim / Icarus / Verilator 跨工具无障碍编译与综合。
 
 ---
 
@@ -24,15 +25,15 @@
    - **I/D-Cache 按 4 KB/路设计**（如 4 KB 直接映射或 8 KB 2 路组相联），索引落在 4 KB 页内偏移 `addr[11:0]` 内，升 B 加 Sv32 TLB 时天然 VIPT 无别名；
    - **IF / LSU 统一走 `valid/ready + fault` 握手**，B 阶段直接在核与 Cache 之间插入 TLB/PTW；
    - **BTB 补齐完整 32 位高位 Tag 并引出 `flush_all`**（A 接 `FENCE.I`，B 追加 `SFENCE.VMA`）；
-   - **RV32A `res_valid` 在 Trap / `MRET` 时清零**（已在基线 `rtl/cpu/load_store_unit.sv` 中落地）；
+   - **RV32A `res_valid` 在 Trap / `MRET` 时清零**（已在基线 `rtl/cpu/load_store_unit.v` 中落地）；
    - **外设直接采用标准寄存器布局**：标准 CLINT + 最小 PLIC + NS16550A UART + SPI microSD，CSR 严格报非法指令异常。
-3. **可选 `DIV_RADIX4` 宏**：基-4 除法器（32→16 步，仅 +112 LUT / +33 FF 且不进关键路径）已保留在 `rtl/cpu/muldiv.sv` 中；前期关闭保持基线干净，Linux 跑稳后可一键开启实测时序收益。
+3. **可选 `DIV_RADIX4` 宏**：基-4 除法器（32→16 步，仅 +112 LUT / +33 FF 且不进关键路径）已保留在 `rtl/cpu/muldiv.v` 中；前期关闭保持基线干净，Linux 跑稳后可一键开启实测时序收益。
 
 ---
 
 ## 3. 分阶段里程碑（草案）
 
-- **Stage 0（已完成）**：`D:\Workspace\digital` 独立新工程与单发射 RV32IMA 基底迁移 + `xsim` 回归全绿。
+- **Stage 0（已完成）**：`D:\Workspace\digital` 独立新工程、单发射 RV32IMA 基底迁移、全量手工重构为纯 Verilog-2001/2005（`.v`/`.vh`）并通过 16/16 非 `-sv` 回归。
 - **Stage 1（外设最小环 / 仿真起步，可并行）**：
   - 板级环：Nexys 4 DDR 顶层 + XDC + **VGA 640×480 彩条** + **JA+JB Pmod OV5640 → VGA 实时画面** + **MIG 128 MB DDR2 压测**。
   - 核级环（路线 A1）：重构单发射核取指/访存总线 + 4 KB/路 I/D-Cache + 真 `FENCE.I` + BTB 扩 Tag + `Zicntr` + 标准 CLINT/PLIC/16550，在 Verilator 挂 32 MB 行为 RAM 跑通 `riscv-tests` 与 **nommu Linux (`CONFIG_MMU=n`, `CONFIG_RISCV_M_MODE=y`)** 进 BusyBox shell。

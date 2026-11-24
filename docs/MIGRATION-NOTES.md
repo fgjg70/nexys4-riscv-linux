@@ -1,16 +1,16 @@
 # 迁移溯源记录（MIGRATION-NOTES）
 
-本工程于 **2026-11-24** 从原竞赛仓库 `fgjg70/FPGA` 精简拆分建立，保持独立演进、不污染原竞赛交付历史。
+本工程于 **2026-11-24** 从原竞赛仓库 `fgjg70/FPGA` 精简拆分建立，并全部**手工重构为纯 Verilog-2001/2005（`.v` + `.vh`）**，保持独立演进、不污染原竞赛交付历史。
 
 ## 1. 迁入内容与来源
 
 | 目标路径 | 来源分支 / 提交 | 说明 |
 |---|---|---|
-| `rtl/cpu/*.sv`（16 个模块） | `fgjg70/FPGA` `main` (`a8a1614`) | 纯单发射 RV32IM 核基线（`rv32_pkg`, `alu`, `branch_unit`, `imm_gen`, `regfile`, `pc`, `imem`, `dmem`, `btb`, `bht`, `ras`, `hazard_unit`, `id_ex_reg`, `ex_mem_reg`, `mem_wb_reg`, `csr_file`） |
-| `rtl/cpu/muldiv.sv` | `fgjg70/FPGA` `radix-4` (`fc1fd5a`) | 保留 `ifdef DIV_RADIX4`（默认关闭 = radix-2；开启 = 16 步 radix-4） |
-| `rtl/cpu/control_unit.sv`、`load_store_unit.sv`、`core.sv`（RV32A 部分） | `fgjg70/FPGA` `feat/isa-ac` (`3176f84`) | **仅抽取 RV32A**（默认开启，`ifndef A_DIS`；含 `AMO*.W` + `LR.W/SC.W` 真预约 + 非对齐 AMO 异常），**彻底剔除 RV32C**；新增 `res_clear` 端口并在 `trap_enter \|\| mret_taken` 时清零 `res_valid`；`csr_file.sv` 的 `MISA_VALUE` 在开启 A 时置位 bit 0（`0x4000_1101`） |
-| `rtl/periph/mmio_subsys.sv` | `fgjg70/FPGA` `main` (`fpga/mmio_subsys.sv`) | 剔除废弃 `GEMM_EN`/`gemm_accel` 桩，仅用于基线回归，后续由标准 CLINT/PLIC/16550 替换 |
-| `sim/`、`sw/`、`tools/` | `fgjg70/FPGA` `main` + `feat/isa-ac` (`amo.S`, `asm.py`) | 保留最小回归测试集（`basic`, `m_ext`, `amo`, `trap`, `timer_irq`, `mmio`, `hello`）与基础工具脚本，新增轻量化 `tools/verify.py` |
+| `rtl/cpu/rv32_defs.vh` + 16 个 `.v` 模块 | `fgjg70/FPGA` `main` (`a8a1614`) | 纯单发射 RV32IM 核基线，由原 `.sv` 手工重构为纯 Verilog-2001/2005（`rv32_defs.vh` 替代 `rv32_pkg.sv`，以命名宏位片替代 `ctrl_s` packed struct） |
+| `rtl/cpu/muldiv.v` | `fgjg70/FPGA` `radix-4` (`fc1fd5a`) | 保留 `` `ifdef DIV_RADIX4 ``（默认关闭 = radix-2；开启 = 16 步 radix-4），已手工重构为纯 Verilog-2001 |
+| `rtl/cpu/control_unit.v`、`load_store_unit.v`、`core.v`（RV32A 部分） | `fgjg70/FPGA` `feat/isa-ac` (`3176f84`) | **仅抽取 RV32A**（默认开启，`` `ifndef A_DIS ``；含 `AMO*.W` + `LR.W/SC.W` 真预约 + 非对齐 AMO 异常），**彻底剔除 RV32C**；新增 `res_clear` 端口并在 `trap_enter \|\| mret_taken` 时清零 `res_valid`；`csr_file.v` 的 `MISA_VALUE` 在开启 A 时置位 bit 0（`0x4000_1101`） |
+| `rtl/periph/mmio_subsys.v` | `fgjg70/FPGA` `main` (`fpga/mmio_subsys.sv`) | 剔除废弃 `GEMM_EN`/`gemm_accel` 桩并手工重构为纯 Verilog-2001，仅用于基线回归，后续由标准 CLINT/PLIC/16550 替换 |
+| `sim/tb_*.v`、`sw/`、`tools/` | `fgjg70/FPGA` `main` + `feat/isa-ac` (`amo.S`, `asm.py`) | 4 个测试平台均已手工重构为纯 Verilog-2001；`tools/verify.py` 以严格非 `-sv`/`--sv` 模式驱动 ModelSim / Vivado `xsim` 回归 |
 
 ## 2. 明确不迁入的历史包袱
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-tools/verify.py — Nexys 4 DDR RV32IMA baseline simulation regression.
+tools/verify.py — Nexys 4 DDR RV32IMA pure Verilog-2001/2005 simulation regression.
 
-Supports both ModelSim (vlib/vlog/vsim, fast) and Vivado xsim (xvlog/xelab/xsim).
+Compiles strictly WITHOUT SystemVerilog flags (no `-sv` / `--sv`) to guarantee
+pure Verilog compliance across ModelSim and Vivado xsim.
 
 Usage:
     python tools/verify.py                 # Default radix-2 RV32IMA regression (8 tests)
@@ -23,88 +24,88 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+INCDIR = ROOT / "rtl" / "cpu"
 
 CPU_RTL = [
-    "rtl/cpu/rv32_pkg.sv",
-    "rtl/cpu/alu.sv",
-    "rtl/cpu/branch_unit.sv",
-    "rtl/cpu/imm_gen.sv",
-    "rtl/cpu/regfile.sv",
-    "rtl/cpu/pc.sv",
-    "rtl/cpu/imem.sv",
-    "rtl/cpu/dmem.sv",
-    "rtl/cpu/btb.sv",
-    "rtl/cpu/bht.sv",
-    "rtl/cpu/ras.sv",
-    "rtl/cpu/hazard_unit.sv",
-    "rtl/cpu/id_ex_reg.sv",
-    "rtl/cpu/ex_mem_reg.sv",
-    "rtl/cpu/mem_wb_reg.sv",
-    "rtl/cpu/control_unit.sv",
-    "rtl/cpu/load_store_unit.sv",
-    "rtl/cpu/muldiv.sv",
-    "rtl/cpu/csr_file.sv",
-    "rtl/cpu/core.sv",
+    "rtl/cpu/alu.v",
+    "rtl/cpu/branch_unit.v",
+    "rtl/cpu/imm_gen.v",
+    "rtl/cpu/regfile.v",
+    "rtl/cpu/pc.v",
+    "rtl/cpu/imem.v",
+    "rtl/cpu/dmem.v",
+    "rtl/cpu/btb.v",
+    "rtl/cpu/bht.v",
+    "rtl/cpu/ras.v",
+    "rtl/cpu/hazard_unit.v",
+    "rtl/cpu/id_ex_reg.v",
+    "rtl/cpu/ex_mem_reg.v",
+    "rtl/cpu/mem_wb_reg.v",
+    "rtl/cpu/control_unit.v",
+    "rtl/cpu/load_store_unit.v",
+    "rtl/cpu/muldiv.v",
+    "rtl/cpu/csr_file.v",
+    "rtl/cpu/core.v",
 ]
 
 SOC_RTL = CPU_RTL + [
-    "rtl/periph/mmio_subsys.sv",
+    "rtl/periph/mmio_subsys.v",
 ]
 
 TESTS = [
     {
         "name": "tb_units",
         "top": "tb_units",
-        "files": CPU_RTL + ["sim/tb_units.sv"],
+        "files": CPU_RTL + ["sim/tb_units.v"],
         "plusargs": [],
         "pass_marker": "RESULT : PASS",
     },
     {
         "name": "tb_core_basic",
         "top": "tb_core",
-        "files": CPU_RTL + ["sim/tb_core.sv"],
+        "files": CPU_RTL + ["sim/tb_core.v"],
         "plusargs": ["imem=sim/prog/basic.hex", "max_cycles=200000"],
         "pass_marker": "RESULT : PASS",
     },
     {
         "name": "tb_core_m_ext",
         "top": "tb_core",
-        "files": CPU_RTL + ["sim/tb_core.sv"],
+        "files": CPU_RTL + ["sim/tb_core.v"],
         "plusargs": ["imem=sim/prog/m_ext.hex", "max_cycles=200000"],
         "pass_marker": "RESULT : PASS",
     },
     {
         "name": "tb_core_amo",
         "top": "tb_core",
-        "files": CPU_RTL + ["sim/tb_core.sv"],
+        "files": CPU_RTL + ["sim/tb_core.v"],
         "plusargs": ["imem=sim/prog/amo.hex", "max_cycles=200000"],
         "pass_marker": "RESULT : PASS",
     },
     {
         "name": "tb_core_trap",
         "top": "tb_core",
-        "files": CPU_RTL + ["sim/tb_core.sv"],
+        "files": CPU_RTL + ["sim/tb_core.v"],
         "plusargs": ["imem=sim/prog/trap.hex", "max_cycles=200000"],
         "pass_marker": "RESULT : PASS",
     },
     {
         "name": "tb_soc_mmio",
         "top": "tb_soc",
-        "files": SOC_RTL + ["sim/tb_soc.sv"],
+        "files": SOC_RTL + ["sim/tb_soc.v"],
         "plusargs": ["imem=sim/prog/mmio.hex", "max_cycles=400000"],
         "pass_marker": "RESULT : PASS",
     },
     {
         "name": "tb_soc_timer_irq",
         "top": "tb_soc",
-        "files": SOC_RTL + ["sim/tb_soc.sv"],
+        "files": SOC_RTL + ["sim/tb_soc.v"],
         "plusargs": ["imem=sim/prog/timer_irq.hex", "max_cycles=400000"],
         "pass_marker": "RESULT : PASS",
     },
     {
         "name": "tb_sw_hello",
         "top": "tb_sw",
-        "files": SOC_RTL + ["sim/tb_sw.sv"],
+        "files": SOC_RTL + ["sim/tb_sw.v"],
         "plusargs": [
             "imem=sim/prog/hello.hex",
             "dmem=sim/prog/hello.dmem.hex",
@@ -165,7 +166,7 @@ def format_plusarg(p: str) -> str:
 
 def run_suite_msim(msim_bin: Path, defines: list[str], only: str | None) -> bool:
     label = ",".join(defines) if defines else "default(radix-2)"
-    print(f"=== Running regression [msim | {label}] ===")
+    print(f"=== Running strict Verilog regression [msim | {label}] ===")
     vlib = str(msim_bin / ("vlib.exe" if os.name == "nt" else "vlib"))
     vlog = str(msim_bin / ("vlog.exe" if os.name == "nt" else "vlog"))
     vsim = str(msim_bin / ("vsim.exe" if os.name == "nt" else "vsim"))
@@ -196,11 +197,12 @@ def run_suite_msim(msim_bin: Path, defines: list[str], only: str | None) -> bool
                 if r.returncode != 0:
                     print(f"  [FAIL] {test['name']} (vlib rc={r.returncode})\n{r.stdout[-1500:]}")
                     return False
-                cmd_v = [vlog, "-sv", "-work", "work"] + [f"+define+{d}" for d in defines]
+                # Strict pure Verilog mode: intentionally NO `-sv` flag
+                cmd_v = [vlog, "-work", "work", f"+incdir+{INCDIR}"] + [f"+define+{d}" for d in defines]
                 cmd_v += [str(ROOT / f) for f in test["files"]]
                 r = run_cmd(cmd_v, tdir, env=env)
                 if r.returncode != 0:
-                    print(f"  [FAIL] {test['name']} (vlog rc={r.returncode})\n{r.stdout[-2000:]}")
+                    print(f"  [FAIL] {test['name']} (vlog rc={r.returncode})\n{r.stdout[-2500:]}")
                     return False
                 compiled_tops.add(top)
 
@@ -212,6 +214,7 @@ def run_suite_msim(msim_bin: Path, defines: list[str], only: str | None) -> bool
                 test["pass_marker"] in r.stdout
                 and "Errors: 0" in r.stdout
                 and "RESULT : FAIL" not in r.stdout
+                and "ERROR:" not in r.stdout
                 and "** Error:" not in r.stdout
             )
             if ok:
@@ -230,7 +233,7 @@ def run_suite_msim(msim_bin: Path, defines: list[str], only: str | None) -> bool
 
 def run_suite_xsim(vivado_bin: Path, defines: list[str], only: str | None) -> bool:
     label = ",".join(defines) if defines else "default(radix-2)"
-    print(f"=== Running regression [xsim | {label}] ===")
+    print(f"=== Running strict Verilog regression [xsim | {label}] ===")
     xvlog = str(vivado_bin / ("xvlog.bat" if os.name == "nt" else "xvlog"))
     xelab = str(vivado_bin / ("xelab.bat" if os.name == "nt" else "xelab"))
     xsim = str(vivado_bin / ("xsim.bat" if os.name == "nt" else "xsim"))
@@ -251,18 +254,19 @@ def run_suite_xsim(vivado_bin: Path, defines: list[str], only: str | None) -> bo
             top = test["top"]
             snap = f"snap_{top}"
             if top not in compiled_tops:
-                cmd_v = [xvlog, "--sv", "--nolog"]
+                # Strict pure Verilog mode: intentionally NO `--sv` flag
+                cmd_v = [xvlog, "--nolog", "-i", str(INCDIR)]
                 for d in defines:
                     cmd_v += ["-d", d]
                 cmd_v += [str(ROOT / f) for f in test["files"]]
                 r = run_cmd(cmd_v, work_root)
                 if r.returncode != 0:
-                    print(f"  [FAIL] {test['name']} (xvlog rc={r.returncode})\n{r.stdout[-2000:]}")
+                    print(f"  [FAIL] {test['name']} (xvlog rc={r.returncode})\n{r.stdout[-2500:]}")
                     return False
                 cmd_e = [xelab, "--nolog", "-mt", "off", "-debug", "off", top, "-s", snap]
                 r = run_cmd(cmd_e, work_root)
                 if r.returncode != 0:
-                    print(f"  [FAIL] {test['name']} (xelab rc={r.returncode})\n{r.stdout[-2000:]}")
+                    print(f"  [FAIL] {test['name']} (xelab rc={r.returncode})\n{r.stdout[-2500:]}")
                     return False
                 compiled_tops[top] = snap
 
@@ -292,7 +296,7 @@ def run_suite_xsim(vivado_bin: Path, defines: list[str], only: str | None) -> bo
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Run RV32IMA baseline regression.")
+    ap = argparse.ArgumentParser(description="Run RV32IMA pure Verilog baseline regression.")
     ap.add_argument("--sim", choices=["auto", "msim", "xsim"], default="auto")
     ap.add_argument("--radix4", action="store_true", help="Enable DIV_RADIX4 macro")
     ap.add_argument("--all-modes", action="store_true", help="Run both default and DIV_RADIX4")
