@@ -1,0 +1,37 @@
+# Build & Simulation artifacts
+build/
+.sim_work/
+xsim.dir/
+.Xil/
+*.log
+*.jou
+*.pb
+*.wdb
+*.vcd
+*.fst
+*.str
+
+# Vivado generated files
+*.bit
+*.bin
+*.mcs
+*.prm
+*.dcp
+*.rpt
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.srcs/sources_1/ip/*/
+!*.xci
+
+# Python / OS / Editor
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
