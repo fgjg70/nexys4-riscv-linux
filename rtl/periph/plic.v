@@ -31,7 +31,7 @@ module plic (
 
   // 7 路高电平有效外部中断源 (bit 0 对应 Source 1 .. bit 6 对应 Source 7)
   input  wire [6:0]  irq_src,
-  output wire        irq_ext
+  output reg         irq_ext
 );
 
   reg [2:0] prio [1:7];
@@ -57,8 +57,6 @@ module plic (
     end
   end
 
-  assign irq_ext = (best_id != 3'd0);
-
   wire [21:0] off    = addr[21:0];
   wire        do_req = req && !ack;
 
@@ -67,13 +65,16 @@ module plic (
     if (rst) begin
       ack       <= 1'b0;
       rdata     <= 32'd0;
+      irq_ext   <= 1'b0;
       enable    <= 7'd0;
       claimed   <= 7'd0;
       threshold <= 3'd0;
       for (i = 1; i <= 7; i = i + 1) prio[i] <= 3'd0;
     end
     else begin
-      ack <= do_req;
+      ack     <= do_req;
+      // 寄存中断输出，彻底切断外设 -> PLIC 优先级链 -> CPU 陷阱向量的组合关键路径
+      irq_ext <= (best_id != 3'd0);
       if (do_req) begin
         if (we) begin
           rdata <= 32'd0;

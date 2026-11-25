@@ -176,12 +176,12 @@ module csr_file #(
                      : sw_irq_en  ? {1'b1, `IRQ_SW}
                      :              {1'b1, `IRQ_TIMER};
 
-  // 向量化 mtvec (mode = 2'b01 时异步中断跳 base + 4*cause; 同步异常一律跳 base)
+  // 向量化 mtvec (mode = 2'b01 时异步中断跳 base + 4*irq_cause; 同步异常一律跳 base)
+  // 使用已寄存源驱动的 irq_cause 预计算中断向量，彻底将 32 位加法器移出 exc_req 关键路径
   wire [31:0] mtvec_base = {mtvec[31:2], 2'b00};
+  wire [31:0] irq_vector = mtvec_base + {26'b0, irq_cause[3:0], 2'b00};
   assign trap_enter  = trap_req;
-  assign trap_vector = (trap_cause[4] && (mtvec[1:0] == 2'b01))
-                       ? (mtvec_base + {26'b0, trap_cause[3:0], 2'b00})
-                       : mtvec_base;
+  assign trap_vector = (trap_cause[4] && (mtvec[1:0] == 2'b01)) ? irq_vector : mtvec_base;
   assign mret_taken  = mret_req;
   assign mret_pc     = mepc;
 

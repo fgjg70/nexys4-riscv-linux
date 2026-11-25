@@ -29,7 +29,7 @@ module clint #(
 
   output wire [63:0] mtime_o,
   output wire        irq_sw,
-  output wire        irq_timer
+  output reg         irq_timer
 );
 
   reg        msip;
@@ -40,9 +40,8 @@ module clint #(
   wire [15:0] off = addr[15:0];
   wire        do_req = req && !ack;
 
-  assign mtime_o   = mtime;
-  assign irq_sw    = msip;
-  assign irq_timer = (mtime >= mtimecmp);
+  assign mtime_o = mtime;
+  assign irq_sw  = msip;
 
   function [31:0] apply_strb;
     input [31:0] cur;
@@ -58,15 +57,18 @@ module clint #(
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
-      ack      <= 1'b0;
-      rdata    <= 32'd0;
-      msip     <= 1'b0;
-      mtime    <= 64'd0;
-      mtimecmp <= 64'hFFFF_FFFF_FFFF_FFFF;
-      div_cnt  <= 16'd0;
+      ack       <= 1'b0;
+      rdata     <= 32'd0;
+      irq_timer <= 1'b0;
+      msip      <= 1'b0;
+      mtime     <= 64'd0;
+      mtimecmp  <= 64'hFFFF_FFFF_FFFF_FFFF;
+      div_cnt   <= 16'd0;
     end
     else begin
-      ack <= do_req;
+      ack       <= do_req;
+      // 寄存 64-bit 比较结果，切断 CLINT 比较器 -> CPU 陷阱向量的组合关键路径
+      irq_timer <= (mtime >= mtimecmp);
 
       // 64 位实时计数器推进
       if (TICK_DIV <= 1) begin

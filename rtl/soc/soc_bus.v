@@ -9,8 +9,11 @@
 //   0x0000_1000 .. 0x0000_4FFF : BootROM (16 KB, 只读, 写返回 err=1)
 //   0x0200_0000 .. 0x0200_FFFF : CLINT
 //   0x0C00_0000 .. 0x0C3F_FFFF : PLIC
-//   0x1000_0000 .. 0x1000_0FFF : NS16550A UART
-//   0x8000_0000 .. 0x87FF_FFFF : 128 MB 统一主存 (仿真接行为 RAM, 上板接 MIG DDR2)
+//   0x1000_0000 .. 0x1000_0FFF : NS16550A UART (PLIC Source 1)
+//   0x1000_1000 .. 0x1000_1FFF : SPI microSD   (PLIC Source 2)
+//   0x1000_2000 .. 0x1000_2FFF : VGA 640x480   (PLIC Source 3)
+//   0x1000_3000 .. 0x1000_3FFF : OV5640 Camera (PLIC Source 4)
+//   0x8000_0000 .. 0x87FF_FFFF : 128 MB 统一主存 (仿真行为 RAM / 实板 MIG DDR2)
 //   其余任意未映射地址         : 单拍返回 ack=1, err=1 (触发 CPU 精确访问异常)
 // ============================================================================
 
@@ -71,7 +74,34 @@ module soc_bus (
   input  wire        uart_ack,
   input  wire [31:0] uart_rdata,
 
-  // Slave 4: 统一主存 (DDR2 / RAM)
+  // Slave 4: SPI microSD
+  output wire        spi_req,
+  output wire        spi_we,
+  output wire [31:0] spi_addr,
+  output wire [31:0] spi_wdata,
+  output wire [3:0]  spi_wstrb,
+  input  wire        spi_ack,
+  input  wire [31:0] spi_rdata,
+
+  // Slave 5: VGA 控制器
+  output wire        vga_req,
+  output wire        vga_we,
+  output wire [31:0] vga_addr,
+  output wire [31:0] vga_wdata,
+  output wire [3:0]  vga_wstrb,
+  input  wire        vga_ack,
+  input  wire [31:0] vga_rdata,
+
+  // Slave 6: OV5640 摄像头控制器
+  output wire        cam_req,
+  output wire        cam_we,
+  output wire [31:0] cam_addr,
+  output wire [31:0] cam_wdata,
+  output wire [3:0]  cam_wstrb,
+  input  wire        cam_ack,
+  input  wire [31:0] cam_rdata,
+
+  // Slave 7: 统一主存 (DDR2 / RAM)
   output wire        ram_req,
   output wire        ram_we,
   output wire [31:0] ram_addr,
@@ -100,10 +130,14 @@ module soc_bus (
   wire sel_clint = (bus_addr[31:16] == 16'h0200);
   wire sel_plic  = (bus_addr[31:22] == 10'b0000_1100_00); // 0x0C00_0000 .. 0x0C3F_FFFF
   wire sel_uart  = (bus_addr[31:12] == 20'h10000);        // 0x1000_0000 .. 0x1000_0FFF
+  wire sel_spi   = (bus_addr[31:12] == 20'h10001);        // 0x1000_1000 .. 0x1000_1FFF
+  wire sel_vga   = (bus_addr[31:12] == 20'h10002);        // 0x1000_2000 .. 0x1000_2FFF
+  wire sel_cam   = (bus_addr[31:12] == 20'h10003);        // 0x1000_3000 .. 0x1000_3FFF
   wire sel_ram   = ((bus_addr & `SOC_RAM_MASK) == `SOC_RAM_BASE);
 
   wire rom_wr_err = bus_req && sel_rom && bus_we;
-  wire unmapped   = bus_req && !(sel_rom || sel_clint || sel_plic || sel_uart || sel_ram);
+  wire unmapped   = bus_req && !(sel_rom || sel_clint || sel_plic ||
+                                 sel_uart || sel_spi || sel_vga || sel_cam || sel_ram);
 
   assign rom_req     = bus_req && sel_rom && !bus_we;
   assign rom_addr    = bus_addr;
@@ -126,6 +160,24 @@ module soc_bus (
   assign uart_wdata  = bus_wdata;
   assign uart_wstrb  = bus_wstrb;
 
+  assign spi_req     = bus_req && sel_spi;
+  assign spi_we      = bus_we;
+  assign spi_addr    = bus_addr;
+  assign spi_wdata   = bus_wdata;
+  assign spi_wstrb   = bus_wstrb;
+
+  assign vga_req     = bus_req && sel_vga;
+  assign vga_we      = bus_we;
+  assign vga_addr    = bus_addr;
+  assign vga_wdata   = bus_wdata;
+  assign vga_wstrb   = bus_wstrb;
+
+  assign cam_req     = bus_req && sel_cam;
+  assign cam_we      = bus_we;
+  assign cam_addr    = bus_addr;
+  assign cam_wdata   = bus_wdata;
+  assign cam_wstrb   = bus_wstrb;
+
   assign ram_req     = bus_req && sel_ram;
   assign ram_we      = bus_we;
   assign ram_addr    = bus_addr;
@@ -139,11 +191,15 @@ module soc_bus (
     else     err_ack_r <= (rom_wr_err || unmapped) && !err_ack_r;
   end
 
-  wire        bus_ack   = rom_ack | clint_ack | plic_ack | uart_ack | ram_ack | err_ack_r;
+  wire        bus_ack   = rom_ack | clint_ack | plic_ack | uart_ack |
+                          spi_ack | vga_ack | cam_ack | ram_ack | err_ack_r;
   wire [31:0] bus_rdata = rom_ack   ? rom_rdata   :
                           clint_ack ? clint_rdata :
                           plic_ack  ? plic_rdata  :
                           uart_ack  ? uart_rdata  :
+                          spi_ack   ? spi_rdata   :
+                          vga_ack   ? vga_rdata   :
+                          cam_ack   ? cam_rdata   :
                           ram_ack   ? ram_rdata   : 32'd0;
   wire        bus_err   = err_ack_r || (ram_ack && ram_err);
 

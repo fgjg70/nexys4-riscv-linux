@@ -54,6 +54,7 @@ SOC_RTL = CPU_RTL + [
 ]
 
 LINUX_SOC_RTL = CPU_RTL + [
+    "rtl/common/async_fifo.v",
     "rtl/soc/icache.v",
     "rtl/soc/dcache.v",
     "rtl/soc/soc_bus.v",
@@ -61,7 +62,20 @@ LINUX_SOC_RTL = CPU_RTL + [
     "rtl/periph/clint.v",
     "rtl/periph/plic.v",
     "rtl/periph/uart_16550.v",
+    "rtl/periph/spi_master.v",
+    "rtl/video/vga_ctrl.v",
+    "rtl/camera/ov5640_sccb.v",
+    "rtl/camera/ov5640_capture.v",
     "rtl/soc/rv32_soc.v",
+]
+
+STAGE2_PERIPH_RTL = [
+    "rtl/common/async_fifo.v",
+    "rtl/periph/spi_master.v",
+    "rtl/video/vga_ctrl.v",
+    "rtl/camera/ov5640_sccb.v",
+    "rtl/camera/ov5640_capture.v",
+    "rtl/soc/mig_ddr2_bridge.v",
 ]
 
 TESTS = [
@@ -148,6 +162,13 @@ TESTS = [
             "ram_lat=4",
             "max_cycles=500000",
         ],
+        "pass_marker": "RESULT : PASS",
+    },
+    {
+        "name": "tb_periph_stage2",
+        "top": "tb_periph_stage2",
+        "files": STAGE2_PERIPH_RTL + ["sim/tb_periph_stage2.v"],
+        "plusargs": [],
         "pass_marker": "RESULT : PASS",
     },
 ]

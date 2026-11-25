@@ -40,6 +40,8 @@ module load_store_unit (
 
   output reg  [31:0] load_data,
   output wire        lsu_stall,
+  output wire        lsu_mem_resp,
+  output wire        lsu_in_tail,
   output wire        amo_write_phase,
   output wire [31:0] amo_old_out,
   output wire        amo_sc_ok,
@@ -116,6 +118,9 @@ module load_store_unit (
                        ((state == S_AMO) && (amo_wait || !amo_phase));
 
   assign lsu_stall       = lsu_fsm_stall || dbus_stall;
+  // 多拍事务的中间响应拍仍归属 MEM 段指令，用于捕获拆分访存与 AMO 读相总线故障
+  assign lsu_mem_resp    = (state == S_HEAD) || (state == S_TAIL) || ((state == S_AMO) && amo_wait);
+  assign lsu_in_tail     = (state == S_TAIL);
   assign amo_write_phase = amo_wr;
   assign amo_old_out     = amo_old;
   assign amo_sc_ok       = sc_ok_r;
@@ -203,7 +208,10 @@ module load_store_unit (
         end
       end
       else begin
-        if (res_clear) res_valid <= 1'b0;
+        // Trap/MRET 或普通 store 写入同字地址时清除 LR/SC 预约
+        if (res_clear || (req_write && !amo_en && dmem_we && (dmem_addr[31:2] == res_addr))) begin
+          res_valid <= 1'b0;
+        end
         if (state == S_AMO) begin
           if (amo_wait)        amo_wait   <= 1'b0;
           else if (!amo_phase) amo_phase  <= 1'b1;

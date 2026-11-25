@@ -39,9 +39,25 @@
 #define UART_LSR         (*(volatile uint32_t *)0x10000014u)
 #define UART_SCR         (*(volatile uint32_t *)0x1000001Cu)
 
+/* Stage 2 板级外设: SPI microSD / VGA 640x480 / OV5640 Camera */
+#define SPI_DATA         (*(volatile uint32_t *)0x10001000u)
+#define SPI_STAT         (*(volatile uint32_t *)0x10001004u)
+#define SPI_CTRL         (*(volatile uint32_t *)0x10001008u)
+#define SPI_DIV          (*(volatile uint32_t *)0x1000100Cu)
+
+#define VGA_CTRL         (*(volatile uint32_t *)0x10002000u)
+#define VGA_STAT         (*(volatile uint32_t *)0x10002004u)
+#define VGA_FB_BASE      (*(volatile uint32_t *)0x10002008u)
+
+#define CAM_CTRL         (*(volatile uint32_t *)0x10003000u)
+#define CAM_STAT         (*(volatile uint32_t *)0x10003004u)
+#define CAM_SCCB_OP      (*(volatile uint32_t *)0x10003008u)
+#define CAM_PIXEL        (*(volatile uint32_t *)0x10003010u)
+
 static volatile uint32_t g_sw_irqs    = 0;
 static volatile uint32_t g_tmr_irqs   = 0;
 static volatile uint32_t g_ext_irqs   = 0;
+static volatile uint32_t g_spi_irqs   = 0;
 static volatile uint32_t g_exc_count  = 0;
 static volatile uint32_t g_last_cause = 0;
 static volatile uint32_t g_last_tval  = 0;
@@ -88,6 +104,9 @@ uint32_t c_trap_handler(uint32_t mcause, uint32_t mepc, uint32_t mtval) {
                     if (g_rx_len < 31u) g_rx_buf[g_rx_len++] = (char)ch;
                 }
                 g_ext_irqs++;
+            } else if (id == 2u) {
+                SPI_STAT = 0x4u; /* W1C DONE_IRQ */
+                g_spi_irqs++;
             }
             if (id != 0u) PLIC_CLAIM = id;
         }
@@ -120,6 +139,18 @@ static int test_dcache(void) {
     if (wbuf[10] != 0x11223344u) return 11;
     bbuf[41] = 0xEEu;
     if (wbuf[10] != 0x1122EE44u) return 12;
+
+    /* 跨 Cache 行边界 (offset=0x1F, 跨越 32B 缓存行尾->下行首!) 非对齐读写压测 */
+    uint32_t cross_line_addr = SCRATCH_BUF_ADDR + 0x201Fu;
+    uint32_t cl_val = 0;
+    __asm__ volatile (
+        "sw %1, 0(%2)\n"
+        "lw %0, 0(%2)\n"
+        : "=r"(cl_val)
+        : "r"(0x13579BDFu), "r"(cross_line_addr)
+        : "memory"
+    );
+    if (cl_val != 0x13579BDFu) return 14;
 
     /* 跨字非对齐读写 (offset=3) */
     uint32_t unaligned_addr = SCRATCH_BUF_ADDR + 0x103u;
@@ -176,6 +207,34 @@ static int test_rv32ma(void) {
         : "memory"
     );
     if (lr_val != 75u || sc_res != 0u || *slot != 999u) return 33;
+
+    /* 同址普通 SW 必须使 LR.W 预约失效 -> 随后的 SC.W 必须失败 (rd=1) */
+    uint32_t sc_fail = 0;
+    __asm__ volatile (
+        "lr.w %0, (%2)\n"
+        "sw   %3, 0(%2)\n"
+        "sc.w %1, %4, (%2)\n"
+        : "=&r"(lr_val), "=&r"(sc_fail)
+        : "r"(slot), "r"(1234u), "r"(5678u)
+        : "memory"
+    );
+    if (lr_val != 999u || sc_fail != 1u || *slot != 1234u) return 34;
+
+    /* MUL / DIV 紧跟必然 D-Cache 缺失的冷地址 LW，定向压测 md_done && lsu_stall 重叠 */
+    volatile uint32_t *cold = (volatile uint32_t *)(SCRATCH_BUF_ADDR + 0x3800u);
+    *cold = 42u;
+    /* 用另一同组地址驱逐 cold 所在缓存行 (+4 KB) 制造冷缺失 */
+    *(volatile uint32_t *)(SCRATCH_BUF_ADDR + 0x4800u) = 99u;
+    uint32_t m_res = 0, d_res = 0, c_val = 0;
+    __asm__ volatile (
+        "lw  %0, 0(%3)\n"
+        "mul %1, %4, %5\n"
+        "div %2, %4, %5\n"
+        : "=&r"(c_val), "=&r"(m_res), "=&r"(d_res)
+        : "r"(cold), "r"(100000u), "r"(37u)
+        : "memory"
+    );
+    if (c_val != 42u || m_res != 3700000u || d_res != 2702u) return 35;
     return 0;
 }
 
@@ -275,6 +334,55 @@ static int test_bus_faults(void) {
         : "memory"
     );
     if (g_exc_count != 2u || g_last_cause != 7u || g_last_tval != rom_addr) return 62;
+
+    /* 多拍 LSU 总线访问异常: 非对齐拆分读未映射地址 -> mcause=5, mtval=bad_unalign */
+    uint32_t bad_unalign = 0x50000003u;
+    __asm__ volatile (
+        "lw %0, 0(%1)\n"
+        : "+r"(sentinel)
+        : "r"(bad_unalign)
+        : "memory"
+    );
+    if (g_exc_count != 3u || g_last_cause != 5u || g_last_tval != bad_unalign) return 63;
+
+    /* 多拍 LSU 总线访问异常: AMO 读相命中未映射地址 -> mcause=7 (Store/AMO access fault) */
+    uint32_t amo_tmp = 0x11111111u;
+    __asm__ volatile (
+        "amoadd.w %0, %2, (%1)\n"
+        : "+r"(amo_tmp)
+        : "r"(bad_addr), "r"(1u)
+        : "memory"
+    );
+    if (g_exc_count != 4u || g_last_cause != 7u || g_last_tval != bad_addr) return 64;
+    return 0;
+}
+
+/* Test 8: Stage 2 板级外设 MMIO + SPI PLIC Source 2 中断端到端探测 */
+static int test_stage2_periphs(void) {
+    /* SPI Mode 0 环回 + PLIC Source 2 中断 */
+    PLIC_PRIO(2) = 1u;
+    PLIC_ENABLE  = (1u << 2);
+    SPI_DIV  = 2u;
+    SPI_CTRL = 0x4u; /* CS_N=0, SD_RESET=0, IRQ_EN=1 */
+    SPI_DATA = 0x5Au;
+    while (SPI_STAT & 0x1u) { }
+    if ((SPI_DATA & 0xFFu) != 0x5Au) return 70;
+    for (volatile int w = 0; w < 20 && g_spi_irqs == 0u; w++) { }
+    if (g_spi_irqs != 1u) return 71;
+    SPI_CTRL = 0x1u; /* CS_N=1, IRQ_EN=0 */
+    PLIC_ENABLE = 0u;
+
+    /* VGA 640x480 寄存器探测 */
+    if ((VGA_CTRL & 0x7u) != 0x1u) return 72; /* 复位默认彩条使能 */
+    VGA_FB_BASE = 0x82000000u;
+    if (VGA_FB_BASE != 0x82000000u) return 73;
+
+    /* OV5640 寄存器与空 FIFO 探测 */
+    if ((CAM_CTRL & 0x8u) == 0u) return 74; /* 复位默认 CAM_RST_N=1 */
+    if ((CAM_STAT & 0x8u) == 0u) return 75; /* FIFO_EMPTY=1 */
+    CAM_SCCB_OP = 0x0011300Au;
+    if (CAM_SCCB_OP != 0x0011300Au) return 76;
+    if (CAM_PIXEL != 0u) return 77;
     return 0;
 }
 
@@ -289,23 +397,26 @@ int main(void) {
     uart_puts("[soc_test] BootROM->RAM OK\n");
 
     int rc;
-    if ((rc = test_dcache())     != 0) finish_test((uint32_t)rc);
-    uart_puts("[soc_test] 1/6 D-Cache eviction+bypass OK\n");
+    if ((rc = test_dcache())         != 0) finish_test((uint32_t)rc);
+    uart_puts("[soc_test] 1/7 D-Cache eviction+bypass OK\n");
 
-    if ((rc = test_smc_fencei()) != 0) finish_test((uint32_t)rc);
-    uart_puts("[soc_test] 2/6 SMC + FENCE.I coherence OK\n");
+    if ((rc = test_smc_fencei())     != 0) finish_test((uint32_t)rc);
+    uart_puts("[soc_test] 2/7 SMC + FENCE.I coherence OK\n");
 
-    if ((rc = test_rv32ma())     != 0) finish_test((uint32_t)rc);
-    uart_puts("[soc_test] 3/6 RV32MA cached OK\n");
+    if ((rc = test_rv32ma())         != 0) finish_test((uint32_t)rc);
+    uart_puts("[soc_test] 3/7 RV32MA cached OK\n");
 
-    if ((rc = test_clint_wfi())  != 0) finish_test((uint32_t)rc);
-    uart_puts("[soc_test] 4/6 CLINT MSIP/MTIP + WFI OK\n");
+    if ((rc = test_clint_wfi())      != 0) finish_test((uint32_t)rc);
+    uart_puts("[soc_test] 4/7 CLINT MSIP/MTIP + WFI OK\n");
 
-    if ((rc = test_plic_uart())  != 0) finish_test((uint32_t)rc);
-    uart_puts("[soc_test] 5/6 PLIC + NS16550A IRQ OK\n");
+    if ((rc = test_plic_uart())      != 0) finish_test((uint32_t)rc);
+    uart_puts("[soc_test] 5/7 PLIC + NS16550A IRQ OK\n");
 
-    if ((rc = test_bus_faults()) != 0) finish_test((uint32_t)rc);
-    uart_puts("[soc_test] 6/6 Precise Bus Faults OK\n");
+    if ((rc = test_bus_faults())     != 0) finish_test((uint32_t)rc);
+    uart_puts("[soc_test] 6/7 Precise Bus Faults OK\n");
+
+    if ((rc = test_stage2_periphs()) != 0) finish_test((uint32_t)rc);
+    uart_puts("[soc_test] 7/7 Stage2 SPI/VGA/OV5640 MMIO+PLIC OK\n");
 
     uart_puts("[soc_test] ALL PASS!\n");
     finish_test(1u);

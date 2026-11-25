@@ -42,36 +42,75 @@ module tb_linux_soc;
   reg         ram_err;
 
   wire        uart_txd;
+  wire        spi_sck, spi_mosi, spi_cs_n, sd_reset;
+  wire [3:0]  vga_r, vga_g, vga_b;
+  wire        vga_hs, vga_vs;
+  wire        cam_pwdn, cam_rst_n, cam_sio_c, cam_sio_d_oe;
   wire [31:0] dbg_pc, dbg_id_pc, dbg_instr;
   wire        dbg_illegal;
   wire        uart_tx_pulse;
   wire [7:0]  uart_tx_byte;
 
+  reg         vga_clk;
+  initial     vga_clk = 1'b0;
+  always #20  vga_clk = ~vga_clk;  // 25 MHz VGA pixel clock
+
   rv32_soc #(
-    .RESET_PC       (`SOC_ROM_BASE),
-    .CLK_HZ         (50_000_000),
-    .BAUD_HZ        (115_200),
-    .CLINT_TICK_DIV (1)
+    .RESET_PC        (`SOC_ROM_BASE),
+    .CLK_HZ          (50_000_000),
+    .BAUD_HZ         (115_200),
+    .CLINT_TICK_DIV  (1),
+    .SPI_DEFAULT_DIV (16'd2),
+    .SCCB_HZ         (1_000_000)
   ) u_soc (
-    .clk           (clk),
-    .rst           (rst),
-    .ram_req       (ram_req),
-    .ram_we        (ram_we),
-    .ram_addr      (ram_addr),
-    .ram_wdata     (ram_wdata),
-    .ram_wstrb     (ram_wstrb),
-    .ram_ack       (ram_ack),
-    .ram_rdata     (ram_rdata),
-    .ram_err       (ram_err),
-    .uart_txd      (uart_txd),
-    .uart_rxd      (1'b1),
-    .ext_irq_in    (6'd0),
-    .dbg_pc        (dbg_pc),
-    .dbg_id_pc     (dbg_id_pc),
-    .dbg_instr     (dbg_instr),
-    .dbg_illegal   (dbg_illegal),
-    .uart_tx_pulse (uart_tx_pulse),
-    .uart_tx_byte  (uart_tx_byte)
+    .clk               (clk),
+    .rst               (rst),
+    .ram_req           (ram_req),
+    .ram_we            (ram_we),
+    .ram_addr          (ram_addr),
+    .ram_wdata         (ram_wdata),
+    .ram_wstrb         (ram_wstrb),
+    .ram_ack           (ram_ack),
+    .ram_rdata         (ram_rdata),
+    .ram_err           (ram_err),
+    .uart_txd          (uart_txd),
+    .uart_rxd          (1'b1),
+    .spi_sck           (spi_sck),
+    .spi_mosi          (spi_mosi),
+    .spi_miso          (spi_mosi),   // SPI 环回供软件端到端自检
+    .spi_cs_n          (spi_cs_n),
+    .sd_reset          (sd_reset),
+    .sd_cd_n           (1'b0),
+    .vga_clk           (vga_clk),
+    .vga_rst           (rst),
+    .vga_px_active     (),
+    .vga_px_x          (),
+    .vga_px_y          (),
+    .vga_px_rgb565     (16'd0),
+    .vga_r             (vga_r),
+    .vga_g             (vga_g),
+    .vga_b             (vga_b),
+    .vga_hs            (vga_hs),
+    .vga_vs            (vga_vs),
+    .cam_pclk          (1'b0),
+    .cam_vsync         (1'b0),
+    .cam_href          (1'b0),
+    .cam_d             (8'd0),
+    .cam_pwdn          (cam_pwdn),
+    .cam_rst_n         (cam_rst_n),
+    .cam_sio_c         (cam_sio_c),
+    .cam_sio_d_oe      (cam_sio_d_oe),
+    .cam_sio_d_in      (1'b1),
+    .cam_stream_rd_en  (1'b0),
+    .cam_stream_rgb565 (),
+    .cam_stream_empty  (),
+    .ext_irq_in        (3'd0),
+    .dbg_pc            (dbg_pc),
+    .dbg_id_pc         (dbg_id_pc),
+    .dbg_instr         (dbg_instr),
+    .dbg_illegal       (dbg_illegal),
+    .uart_tx_pulse     (uart_tx_pulse),
+    .uart_tx_byte      (uart_tx_byte)
   );
 
   // ---- 256 KB 行为统一 RAM (带可配多拍延迟，压测 I/D-Cache 与总线仲裁) ----
