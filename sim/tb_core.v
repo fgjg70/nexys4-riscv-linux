@@ -73,16 +73,16 @@ module tb_core;
   always @(negedge clk) begin
     if (!rst && $test$plusargs("illegal_trace") && cycles >= 32'd40) begin
       $display("[pre] cyc=%0d if_pc=0x%08x if_instr=0x%08x | ex_pc=0x%08x ex_illegal=%b",
-               cycles, u_dut.if_pc, u_dut.if_instr, u_dut.id_ex_pc, u_dut.id_ex_ctrl[`CTRL_ILLEGAL]);
+               cycles, u_dut.u_cpu.if_pc, u_dut.u_cpu.if_instr, u_dut.u_cpu.id_ex_pc, u_dut.u_cpu.id_ex_ctrl[`CTRL_ILLEGAL]);
       $display("      id_illegal=%b exc_req=%b trap_req=%b trap_enter=%b trap_redir=%b irq_take=%b irq_pend=%b",
-               u_dut.id_ctrl[`CTRL_ILLEGAL], u_dut.exc_req, u_dut.trap_req, u_dut.trap_enter,
-               u_dut.trap_redir, u_dut.irq_take, u_dut.irq_pending);
+               u_dut.u_cpu.id_ctrl[`CTRL_ILLEGAL], u_dut.u_cpu.exc_req, u_dut.u_cpu.trap_req, u_dut.u_cpu.trap_enter,
+               u_dut.u_cpu.trap_redir, u_dut.u_cpu.irq_take, u_dut.u_cpu.irq_pending);
       $display("      pipe_stall=%b redirect=%b redirect_raw=%b actual_taken=%b pred_ok=%b ex_taken=%b pc_src=%b",
-               u_dut.pipe_stall, u_dut.redirect, u_dut.redirect_raw, u_dut.actual_taken,
-               u_dut.pred_ok, u_dut.ex_taken, u_dut.pc_src);
-      $display("      dmem_we=%b mem_read=%b mem_write=%b reg_write=%b pc_sel=%0d dbg_illegal=%b",
-               u_dut.dmem_we, u_dut.id_ex_ctrl[`CTRL_MEM_READ], u_dut.id_ex_ctrl[`CTRL_MEM_WRITE],
-               u_dut.id_ex_ctrl[`CTRL_REG_WRITE], u_dut.id_ex_ctrl[`CTRL_PC_SEL], dbg_illegal);
+               u_dut.u_cpu.pipe_stall, u_dut.u_cpu.redirect, u_dut.u_cpu.redirect_raw, u_dut.u_cpu.actual_taken,
+               u_dut.u_cpu.pred_ok, u_dut.u_cpu.ex_taken, u_dut.u_cpu.pc_src);
+      $display("      dbus_we=%b mem_read=%b mem_write=%b reg_write=%b pc_sel=%0d dbg_illegal=%b",
+               u_dut.u_cpu.dbus_we, u_dut.u_cpu.id_ex_ctrl[`CTRL_MEM_READ], u_dut.u_cpu.id_ex_ctrl[`CTRL_MEM_WRITE],
+               u_dut.u_cpu.id_ex_ctrl[`CTRL_REG_WRITE], u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL], dbg_illegal);
     end
   end
 
@@ -94,10 +94,10 @@ module tb_core;
         if (!rst) begin
           $display("[trace] %5d | 0x%08x 0x%08x | 0x%08x |  %b   %b    %b      %b        %b      %b",
                    cycles,
-                   u_dut.if_pc, u_dut.if_instr,
-                   u_dut.id_ex_pc,
-                   u_dut.id_ctrl[`CTRL_ILLEGAL], u_dut.pipe_stall, u_dut.id_ex_bubble,
-                   u_dut.trap_enter, u_dut.redirect, u_dut.exc_req);
+                   u_dut.u_cpu.if_pc, u_dut.u_cpu.if_instr,
+                   u_dut.u_cpu.id_ex_pc,
+                   u_dut.u_cpu.id_ctrl[`CTRL_ILLEGAL], u_dut.u_cpu.pipe_stall, u_dut.u_cpu.id_ex_bubble,
+                   u_dut.u_cpu.trap_enter, u_dut.u_cpu.redirect, u_dut.u_cpu.exc_req);
         end
       end
     end

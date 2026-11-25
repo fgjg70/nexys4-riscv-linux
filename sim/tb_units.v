@@ -431,11 +431,21 @@ module tb_units;
     chk({31'd0, cu_ctrl[`CTRL_CSR_SRC_IMM]}, 32'd1,               "CSRRWI 源取 uimm");
     chk({27'd0, cu_ctrl[`CTRL_CSR_UIMM]},    32'd17,              "CSRRWI csr_uimm");
 
-    // FENCE
+    // FENCE / FENCE.I / WFI
     cu_instr = {25'd0, 7'b0001111}; #1;
     chk({31'd0, cu_ctrl[`CTRL_ILLEGAL]},     32'd0,               "FENCE 合法 (NOP)");
     chk({31'd0, cu_ctrl[`CTRL_REG_WRITE]},   32'd0,               "FENCE 不写寄存器");
     chk({30'd0, cu_ctrl[`CTRL_PC_SEL]},      {30'd0, `PC_NEXT},   "FENCE 不跳转");
+    cu_instr = {12'd0, 5'd0, 3'b001, 5'd0, 7'b0001111}; #1;
+    chk({31'd0, cu_ctrl[`CTRL_ILLEGAL]},     32'd0,               "FENCE.I 合法");
+    chk({29'd0, cu_ctrl[`CTRL_SYS_OP]},      {29'd0, `SYS_FENCEI},"FENCE.I sys_op");
+    cu_instr = {12'd0, 5'd0, 3'b010, 5'd0, 7'b0001111}; #1;
+    chk({31'd0, cu_ctrl[`CTRL_ILLEGAL]},     32'd1,               "FENCE f3=010 非法");
+    cu_instr = {12'h105, 5'd0, 3'b000, 5'd0, 7'b1110011}; #1;
+    chk({31'd0, cu_ctrl[`CTRL_ILLEGAL]},     32'd0,               "WFI 合法");
+    chk({29'd0, cu_ctrl[`CTRL_SYS_OP]},      {29'd0, `SYS_WFI},   "WFI sys_op");
+    cu_instr = {12'h000, 5'd1, 3'b000, 5'd0, 7'b1110011}; #1;
+    chk({31'd0, cu_ctrl[`CTRL_ILLEGAL]},     32'd1,               "ECALL rs1!=0 非法");
 
     // RV32A
 `ifndef A_DIS

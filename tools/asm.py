@@ -55,12 +55,17 @@ ABI = {
     't3': 28, 't4': 29, 't5': 30, 't6': 31,
 }
 
-# ---- Zicsr: CSR 名字 -> 地址 (只列本核实现的) ----
+# ---- Zicsr / Zicntr: CSR 名字 -> 地址 ----
 CSR_NAME = {
     'mstatus': 0x300, 'misa': 0x301, 'mie': 0x304, 'mtvec': 0x305,
+    'mcounteren': 0x306, 'mstatush': 0x310, 'mcountinhibit': 0x320,
     'mscratch': 0x340, 'mepc': 0x341, 'mcause': 0x342, 'mtval': 0x343,
     'mip': 0x344,
+    'mcycle': 0xB00, 'minstret': 0xB02, 'mcycleh': 0xB80, 'minstreth': 0xB82,
+    'cycle': 0xC00, 'time': 0xC01, 'instret': 0xC02,
+    'cycleh': 0xC80, 'timeh': 0xC81, 'instreth': 0xC82,
     'mvendorid': 0xF11, 'marchid': 0xF12, 'mimpid': 0xF13, 'mhartid': 0xF14,
+    'mconfigptr': 0xF15,
 }
 
 R_OPS = {
@@ -431,8 +436,12 @@ def encode(mn, ops, pc, labels):
         return [(4, 0x00100073)]
     if mn == 'mret':
         return [(4, 0x30200073)]
+    if mn == 'wfi':
+        return [(4, 0x10500073)]
     if mn == 'fence':
-        return [(4, 0x0FF0000F)]          # 本核顺序执行, FENCE 可退化为 NOP
+        return [(4, 0x0FF0000F)]
+    if mn == 'fence.i':
+        return [(4, 0x0000100F)]
     # ---- RV32A 原子指令 (可选 .aq/.rl/.aqrl 后缀) ----
     base_mn = mn
     aq = rl = 0

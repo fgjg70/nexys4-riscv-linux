@@ -31,12 +31,16 @@
 
 ---
 
-## 3. 分阶段里程碑（草案）
+## 3. 分阶段里程碑（进展跟踪）
 
-- **Stage 0（已完成）**：`D:\Workspace\digital` 独立新工程、单发射 RV32IMA 基底迁移、全量手工重构为纯 Verilog-2001/2005（`.v`/`.vh`）并通过 16/16 非 `-sv` 回归。
-- **Stage 1（外设最小环 / 仿真起步，可并行）**：
+- **Stage 0（已完成）**：`D:\Workspace\digital` 独立新工程、单发射 RV32IMA 基底迁移、全量手工重构为纯 Verilog-2001/2005（`.v`/`.vh`）并通过非 `-sv` 回归。
+- **Stage 1A（核与统一 SoC 仿真环 · 已完成）**：
+  - 总线解耦单发射核 `rv32_cpu.v`（32 位全地址 BTB + 单拍 `flush_all`、`Zicntr`、`WFI`、真 `FENCE.I`、向量化 `mtvec`、严格非法 CSR、精确访存/取指总线异常）；
+  - 4 KB VIPT 安全 `icache.v` / 回写 `dcache.v` + `soc_bus.v` + `bootrom.v` + 标准 SiFive `clint.v` / `plic.v` / NS16550A `uart_16550.v` + `rv32_soc.v`；
+  - 已通过 ModelSim 22/22 严格纯 Verilog 回归（含 `sw/soc_test` 端到端 C 固件 4 拍延迟主存仿真）与 Vivado `xvlog` 零报错语法校验。
+- **Stage 1B（板级外设环 & nommu Linux 仿真，下一步）**：
   - 板级环：Nexys 4 DDR 顶层 + XDC + **VGA 640×480 彩条** + **JA+JB Pmod OV5640 → VGA 实时画面** + **MIG 128 MB DDR2 压测**。
-  - 核级环（路线 A1）：重构单发射核取指/访存总线 + 4 KB/路 I/D-Cache + 真 `FENCE.I` + BTB 扩 Tag + `Zicntr` + 标准 CLINT/PLIC/16550，在 Verilator 挂 32 MB 行为 RAM 跑通 `riscv-tests` 与 **nommu Linux (`CONFIG_MMU=n`, `CONFIG_RISCV_M_MODE=y`)** 进 BusyBox shell。
+  - 软件环：在 `rv32_soc` 上跑 `riscv-tests` 全集与 **nommu Linux (`CONFIG_MMU=n`, `CONFIG_RISCV_M_MODE=y`)** 进 BusyBox shell。
 - **Stage 2（路线 A2 上板）**：把 Stage 1 的核接入 MIG DDR2 + BootROM + microSD/UART，在 Nexys 4 DDR 实板上点亮 nommu Linux，并将 VGA / OV5640 挂载为外设。
 - **Stage 3（路线 B 升级完整 Linux）**：在稳定 A 核上增量补齐 S/U 特权级、S-CSR/委托、`SRET`/`SFENCE.VMA` 与 Sv32 MMU（ITLB/DTLB + 两级硬件 PTW），跑通 OpenSBI + 标准 MMU Linux（支持 `fork`/`mmap` 与标准 ELF 生态）。
 - **Stage 4（可选扩展）**：按需将上游 `feat/ai-accel` 的 128-MAC NPU 引擎接入 DDR2 DMA + Linux 字符设备驱动。

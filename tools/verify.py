@@ -45,11 +45,23 @@ CPU_RTL = [
     "rtl/cpu/load_store_unit.v",
     "rtl/cpu/muldiv.v",
     "rtl/cpu/csr_file.v",
+    "rtl/cpu/rv32_cpu.v",
     "rtl/cpu/core.v",
 ]
 
 SOC_RTL = CPU_RTL + [
     "rtl/periph/mmio_subsys.v",
+]
+
+LINUX_SOC_RTL = CPU_RTL + [
+    "rtl/soc/icache.v",
+    "rtl/soc/dcache.v",
+    "rtl/soc/soc_bus.v",
+    "rtl/soc/bootrom.v",
+    "rtl/periph/clint.v",
+    "rtl/periph/plic.v",
+    "rtl/periph/uart_16550.v",
+    "rtl/soc/rv32_soc.v",
 ]
 
 TESTS = [
@@ -89,6 +101,13 @@ TESTS = [
         "pass_marker": "RESULT : PASS",
     },
     {
+        "name": "tb_core_priv_ext",
+        "top": "tb_core",
+        "files": CPU_RTL + ["sim/tb_core.v"],
+        "plusargs": ["imem=sim/prog/priv_ext.hex", "max_cycles=200000"],
+        "pass_marker": "RESULT : PASS",
+    },
+    {
         "name": "tb_soc_mmio",
         "top": "tb_soc",
         "files": SOC_RTL + ["sim/tb_soc.v"],
@@ -103,6 +122,13 @@ TESTS = [
         "pass_marker": "RESULT : PASS",
     },
     {
+        "name": "tb_soc_wfi_vec",
+        "top": "tb_soc",
+        "files": SOC_RTL + ["sim/tb_soc.v"],
+        "plusargs": ["imem=sim/prog/wfi_vec.hex", "max_cycles=400000"],
+        "pass_marker": "RESULT : PASS",
+    },
+    {
         "name": "tb_sw_hello",
         "top": "tb_sw",
         "files": SOC_RTL + ["sim/tb_sw.v"],
@@ -110,6 +136,17 @@ TESTS = [
             "imem=sim/prog/hello.hex",
             "dmem=sim/prog/hello.dmem.hex",
             "max_cycles=400000",
+        ],
+        "pass_marker": "RESULT : PASS",
+    },
+    {
+        "name": "tb_linux_soc",
+        "top": "tb_linux_soc",
+        "files": LINUX_SOC_RTL + ["sim/tb_linux_soc.v"],
+        "plusargs": [
+            "ram=sim/prog/soc_test.hex",
+            "ram_lat=4",
+            "max_cycles=500000",
         ],
         "pass_marker": "RESULT : PASS",
     },
@@ -159,7 +196,7 @@ def run_cmd(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> sub
 
 def format_plusarg(p: str) -> str:
     k, v = p.split("=", 1)
-    if k in ("imem", "dmem"):
+    if k in ("imem", "dmem", "ram", "rom"):
         v = (ROOT / v).as_posix()
     return f"{k}={v}"
 

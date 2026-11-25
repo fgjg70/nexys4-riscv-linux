@@ -2,7 +2,7 @@
 `include "rv32_defs.vh"
 
 // ============================================================================
-// hazard_unit.v — 冒险处理单元 (ID 段前递预选 + 2 拍 load-use + 重定向门控)
+// hazard_unit.v — 冒险处理单元 (ID 段前递预选 + 2 拍 load-use + SYSTEM 精确串行化)
 // 纯 Verilog-2001
 // ============================================================================
 
@@ -20,6 +20,7 @@ module hazard_unit (
 
   input  wire       lsu_stall,
   input  wire       ex_busy,
+  input  wire       id_sys_stall,
   input  wire       redirect_raw,
 
   output reg  [1:0] fwd_a_pre,
@@ -40,8 +41,12 @@ module hazard_unit (
     load_use     = load_use_ex || load_use_mem;
   end
 
-  assign pipe_stall   = load_use || lsu_stall || ex_busy;
-  assign id_ex_bubble = load_use && !(lsu_stall || ex_busy);
+  // id_sys_stall: 在 ID 段暂停 SYSTEM/异常指令直到在途访存离开 EX/MEM，
+  // 复用气泡注入路径，既保证 WB 访存异常精确性又避免任何前递陈旧问题。
+  wire id_stall = load_use || id_sys_stall;
+
+  assign pipe_stall   = id_stall || lsu_stall || ex_busy;
+  assign id_ex_bubble = id_stall && !(lsu_stall || ex_busy);
   assign hold_mem     = lsu_stall || ex_busy;
   assign redirect     = redirect_raw && !(lsu_stall || ex_busy || load_use_ex);
 

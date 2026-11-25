@@ -2,9 +2,11 @@
 `include "rv32_defs.vh"
 
 // ============================================================================
-// control_unit.v — RV32IMA + Zicsr 主译码器（纯 Verilog-2001）
+// control_unit.v — RV32IMA + Zicsr + Zifencei + WFI 主译码器（纯 Verilog-2001）
 // ----------------------------------------------------------------------------
 // 默认开启 RV32A (定义 A_DIS 可关闭)。全部字段经 rv32_defs.vh 命名位片访问。
+// Stage 1A 升级: 区分 FENCE (f3=000) / FENCE.I (f3=001)，新增 WFI (12'h105)，
+// 对 ECALL/EBREAK/MRET/WFI 严格校验 rs1=0 且 rd=0。
 // ============================================================================
 
 module control_unit #(
@@ -17,6 +19,8 @@ module control_unit #(
   wire [6:0] opcode = instr[6:0];
   wire [2:0] funct3 = instr[14:12];
   wire [6:0] funct7 = instr[31:25];
+  wire [4:0] rs1    = instr[19:15];
+  wire [4:0] rd     = instr[11:7];
 
   reg illegal;
 
@@ -244,23 +248,34 @@ module control_unit #(
 `endif
 
       // ------------------------------------------------------------------
-      // FENCE / FENCE.I (基线无 Cache 阶段合法 NOP, 路线 A 接入 I-Cache 后补冲刷)
+      // FENCE (f3=000: 顺序核合法 NOP) / FENCE.I (f3=001: 冲刷 I-Cache + BTB + 流水线)
       // ------------------------------------------------------------------
       `OPC_FENCE: begin
+        case (funct3)
+          3'b000: ;                                     // FENCE (含 FENCE.TSO)
+          3'b001: ctrl[`CTRL_SYS_OP] = `SYS_FENCEI;     // Zifencei: FENCE.I
+          default: illegal = 1'b1;
+        endcase
       end
 
       // ------------------------------------------------------------------
-      // SYSTEM: ECALL / EBREAK / MRET / Zicsr
+      // SYSTEM: ECALL / EBREAK / MRET / WFI / Zicsr
       // ------------------------------------------------------------------
       `OPC_SYSTEM: begin
         case (funct3)
           3'b000: begin
-            case (instr[31:20])
-              12'h000: ctrl[`CTRL_SYS_OP] = `SYS_ECALL;
-              12'h001: ctrl[`CTRL_SYS_OP] = `SYS_EBREAK;
-              12'h302: ctrl[`CTRL_SYS_OP] = `SYS_MRET;
-              default: illegal = 1'b1;
-            endcase
+            if ((rs1 != 5'd0) || (rd != 5'd0)) begin
+              illegal = 1'b1;
+            end
+            else begin
+              case (instr[31:20])
+                12'h000: ctrl[`CTRL_SYS_OP] = `SYS_ECALL;
+                12'h001: ctrl[`CTRL_SYS_OP] = `SYS_EBREAK;
+                12'h105: ctrl[`CTRL_SYS_OP] = `SYS_WFI;
+                12'h302: ctrl[`CTRL_SYS_OP] = `SYS_MRET;
+                default: illegal = 1'b1;
+              endcase
+            end
           end
           3'b100: illegal = 1'b1;
           default: begin
@@ -287,6 +302,7 @@ module control_unit #(
       ctrl[`CTRL_MEM_WRITE] = 1'b0;
       ctrl[`CTRL_AMO_EN]    = 1'b0;
       ctrl[`CTRL_PC_SEL]    = `PC_NEXT;
+      ctrl[`CTRL_SYS_OP]    = `SYS_NONE;
     end
   end
 

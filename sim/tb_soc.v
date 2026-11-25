@@ -73,7 +73,7 @@ module tb_soc;
         if (!rst) begin
           $display("[pctrace] %6d 0x%08x 0x%08x  s3=%0d s4=%0d",
                    cycles, dbg_id_pc, dbg_instr,
-                   u_dut.u_regfile.mem[18], u_dut.u_regfile.mem[19]);
+                   u_dut.u_cpu.u_regfile.mem[18], u_dut.u_cpu.u_regfile.mem[19]);
         end
       end
     end
@@ -86,10 +86,10 @@ module tb_soc;
         @(negedge clk);
         if (!rst) begin
           $display("[csrtrace] %6d | 0x%08x 0x%08x 0x%08x 0x%08x |    %b     0x%02x     0x%02x",
-                   cycles, u_dut.u_csr.mcause, u_dut.u_csr.mepc, u_dut.u_csr.mtvec,
-                   {19'b0, u_dut.u_csr.st_mpp, 3'b0, u_dut.u_csr.st_mpie, 3'b0,
-                    u_dut.u_csr.st_mie, 3'b0},
-                   u_dut.trap_req, u_dut.trap_cause, u_dut.irq_cause);
+                   cycles, u_dut.u_cpu.u_csr.mcause, u_dut.u_cpu.u_csr.mepc, u_dut.u_cpu.u_csr.mtvec,
+                   {19'b0, u_dut.u_cpu.u_csr.st_mpp, 3'b0, u_dut.u_cpu.u_csr.st_mpie, 3'b0,
+                    u_dut.u_cpu.u_csr.st_mie, 3'b0},
+                   u_dut.u_cpu.trap_req, u_dut.u_cpu.trap_cause, u_dut.u_cpu.irq_cause);
         end
       end
     end
@@ -104,14 +104,14 @@ module tb_soc;
           $display("[irqtrace] %6d | %10d %12d |  %b   %b   %b |     %b          %b",
                    cycles,
                    u_mmio.cycle_cnt[31:0], u_mmio.mtimecmp[31:0],
-                   u_dut.u_csr.ie_mtie, u_dut.u_csr.st_mie,
+                   u_dut.u_cpu.u_csr.ie_mtie, u_dut.u_cpu.u_csr.st_mie,
                    (u_mmio.cycle_cnt >= u_mmio.mtimecmp),
-                   irq_timer, u_dut.irq_pending);
-          if (u_dut.irq_pending || u_dut.trap_enter || u_dut.irq_take)
+                   irq_timer, u_dut.u_cpu.irq_pending);
+          if (u_dut.u_cpu.irq_pending || u_dut.u_cpu.trap_enter || u_dut.u_cpu.irq_take)
             $display("           >> irq_take=%b trap_req=%b trap_enter=%b exc_req=%b stall=%b mret=%b | s2(x18)=%0d s3(x19)=%0d",
-                     u_dut.irq_take, u_dut.trap_req, u_dut.trap_enter, u_dut.exc_req,
-                     u_dut.pipe_stall, u_dut.mret_taken,
-                     u_dut.u_regfile.mem[18], u_dut.u_regfile.mem[19]);
+                     u_dut.u_cpu.irq_take, u_dut.u_cpu.trap_req, u_dut.u_cpu.trap_enter, u_dut.u_cpu.exc_req,
+                     u_dut.u_cpu.pipe_stall, u_dut.u_cpu.mret_taken,
+                     u_dut.u_cpu.u_regfile.mem[18], u_dut.u_cpu.u_regfile.mem[19]);
         end
       end
     end

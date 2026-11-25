@@ -3,16 +3,20 @@
 
 // ============================================================================
 // bht.v — 方向预测表 (PHT): 8192 项 × 2 位饱和计数器 (纯 Verilog-2001)
+// ----------------------------------------------------------------------------
+// 升级要点 (Stage 1A): PC_TOP 默认扩至 32，索引使用字对齐 pc[IDX_BITS+1:2]，
+// 支持 flush_all 清除全局历史寄存器 ghr (PHT 阵列保持 BRAM 映射不变)。
 // ============================================================================
 
 module bht #(
   parameter       IDX_BITS      = 13,
   parameter       GH_BITS       = 13,
-  parameter       PC_TOP        = 14,
+  parameter       PC_TOP        = 32,
   parameter [0:0] HIST_ALL_CTRL = 1'b1
 )(
   input  wire        clk,
   input  wire        rst,
+  input  wire        flush_all,
 
   input  wire [31:0] pred_pc,
   output reg  [1:0]  ctr_q,
@@ -35,7 +39,7 @@ module bht #(
 
   reg [IDX_BITS-1:0] ghr;
 
-  wire [IDX_BITS-1:0] rd_idx = pred_pc[IDX_BITS:1] ^ (ghr & GH_MASK);
+  wire [IDX_BITS-1:0] rd_idx = pred_pc[IDX_BITS+1:2] ^ (ghr & GH_MASK);
   wire [PW-1:0]       pc_w   = pred_pc[PC_TOP-1:2];
 
   reg [IDX_BITS-1:0] idx_d1, idx_d2;
@@ -43,7 +47,7 @@ module bht #(
   reg [1:0]          ctr_d1;
 
   wire                align_bad = (pcw_d2 != upd_pc[PC_TOP-1:2]);
-  wire [IDX_BITS-1:0] wr_idx    = align_bad ? (upd_pc[IDX_BITS:1] ^ (ghr & GH_MASK))
+  wire [IDX_BITS-1:0] wr_idx    = align_bad ? (upd_pc[IDX_BITS+1:2] ^ (ghr & GH_MASK))
                                             : idx_d2;
 
   wire [1:0] ctr_new = upd_taken ? ((ctr_d1 == 2'b11) ? 2'b11 : (ctr_d1 + 2'b01))
@@ -68,7 +72,7 @@ module bht #(
       ctr_d1        <= 2'b01;
     end
     else begin
-      if (upd_en) mem[wr_idx] <= ctr_new;
+      if (upd_en && !flush_all) mem[wr_idx] <= ctr_new;
       ctr_q  <= mem[rd_idx];
       idx_d1 <= rd_idx;
       idx_d2 <= idx_d1;
@@ -76,18 +80,15 @@ module bht #(
       pcw_d2 <= pcw_d1;
       ctr_d1 <= ctr_q;
 
-      if (upd_en) begin
+      if (flush_all) begin
+        ghr <= {IDX_BITS{1'b0}};
+      end
+      else if (upd_en) begin
         if (HIST_ALL_CTRL || upd_is_cond) begin
           ghr <= {ghr[IDX_BITS-2:0], upd_taken};
         end
         if (align_bad) begin
           align_err_cnt <= align_err_cnt + 16'd1;
-`ifndef SYNTHESIS
-          if (align_err_cnt < 16'd4) begin
-            $display("[bht] ALIGN MISMATCH: carried PC=0x%08x vs EX pc=0x%08x (t=%0t)",
-                     {pcw_d2, 2'b00}, upd_pc, $time);
-          end
-`endif
         end
       end
     end

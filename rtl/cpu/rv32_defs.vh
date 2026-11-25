@@ -1,8 +1,8 @@
 // ============================================================================
-// rv32_defs.vh — RV32IMA 核心编码与控制束字段定义（纯 Verilog-2001 单一事实来源）
+// rv32_defs.vh — RV32IMA 核心编码、控制束与 SoC 地址定义（纯 Verilog-2001）
 // ----------------------------------------------------------------------------
-// 替代原 rv32_pkg.sv：全部常量、编码与控制束命名位片集中定义于此，
-// 各模块通过 `include "rv32_defs.vh"` 引用，杜绝裸魔数位切片与重复维护。
+// 全部常量、编码与控制束命名位片集中定义于此，各模块通过 `include "rv32_defs.vh"`
+// 引用，杜绝裸魔数位切片与重复维护。
 // ============================================================================
 
 `ifndef RV32_DEFS_VH
@@ -129,13 +129,15 @@
 `define WB_CSR          2'd3
 
 // ----------------------------------------------------------------------------
-// SYSTEM 指令子类型 (3-bit)
+// SYSTEM / FENCE.I 子类型 (3-bit)
 // ----------------------------------------------------------------------------
 `define SYS_NONE        3'd0
 `define SYS_CSR         3'd1
 `define SYS_ECALL       3'd2
 `define SYS_EBREAK      3'd3
 `define SYS_MRET        3'd4
+`define SYS_FENCEI      3'd5
+`define SYS_WFI         3'd6
 
 // ----------------------------------------------------------------------------
 // 下一 PC 来源 (2-bit)
@@ -171,7 +173,7 @@
 `define CTRL_WB_SRC       20:19   // 2-bit: 写回数据来源
 `define CTRL_IMM_FMT      23:21   // 3-bit: 立即数格式
 `define CTRL_ILLEGAL      24      // 1-bit: 非法指令标志
-`define CTRL_SYS_OP       27:25   // 3-bit: SYSTEM 子类型
+`define CTRL_SYS_OP       27:25   // 3-bit: SYSTEM / FENCE.I 子类型
 `define CTRL_CSR_ADDR     39:28   // 12-bit: CSR 地址
 `define CTRL_CSR_CMD      41:40   // 2-bit: 01=W 10=S 11=C
 `define CTRL_CSR_SRC_IMM  42      // 1-bit: 1=uimm, 0=rs1
@@ -182,7 +184,7 @@
 `define CTRL_AMO_RL       55      // 1-bit: release
 
 // ----------------------------------------------------------------------------
-// 基线存储与 MMIO 地址映射 (后续路线 A 统一总线升级时在此一处调整)
+// 兼容旧基线 (core.v + mmio_subsys.v 裸机测试用) 地址映射
 // ----------------------------------------------------------------------------
 `define PC_RESET          32'h8000_0000
 `define IMEM_BASE         32'h8000_0000
@@ -208,17 +210,42 @@
 `define MMIO_MTIME_HI     32'hA000_0034
 
 // ----------------------------------------------------------------------------
-// 陷阱原因码
+// 路线 A / B 统一地址映射 (Nexys 4 DDR Linux SoC)
+//   0x0000_1000 .. 0x0000_4FFF : 片上 BootROM (16 KB)
+//   0x0200_0000 .. 0x0200_FFFF : 标准 SiFive CLINT (msip / mtimecmp / mtime)
+//   0x0C00_0000 .. 0x0C3F_FFFF : 标准最小 RISC-V PLIC
+//   0x1000_0000 .. 0x1000_0FFF : NS16550A 兼容串口 (Linux 8250 驱动免改)
+//   0x1000_1000 .. 0x1000_1FFF : SPI microSD 控制器 (预留)
+//   0x1000_2000 .. 0x1000_2FFF : VGA 640x480 控制寄存器 (预留)
+//   0x1000_3000 .. 0x1000_3FFF : JA+JB Pmod OV5640 控制寄存器 (预留)
+//   0x8000_0000 .. 0x87FF_FFFF : 128 MB DDR2 统一主存 (Cacheable)
+// ----------------------------------------------------------------------------
+`define SOC_ROM_BASE      32'h0000_1000
+`define SOC_CLINT_BASE    32'h0200_0000
+`define SOC_PLIC_BASE     32'h0C00_0000
+`define SOC_UART_BASE     32'h1000_0000
+`define SOC_SPI_BASE      32'h1000_1000
+`define SOC_VGA_BASE      32'h1000_2000
+`define SOC_CAM_BASE      32'h1000_3000
+`define SOC_RAM_BASE      32'h8000_0000
+`define SOC_RAM_MASK      32'hF800_0000  // 匹配 0x8000_0000 .. 0x87FF_FFFF (128 MB)
+
+// ----------------------------------------------------------------------------
+// 陷阱原因码 (RISC-V Privileged Spec Table 3.6)
 // ----------------------------------------------------------------------------
 // 同步异常 (mcause[31] = 0)
 `define CAUSE_INSN_MISALIGN  4'd0
+`define CAUSE_INSN_ACCESS    4'd1
 `define CAUSE_ILLEGAL        4'd2
 `define CAUSE_BREAKPOINT     4'd3
 `define CAUSE_LOAD_MISALIGN  4'd4
+`define CAUSE_LOAD_ACCESS    4'd5
 `define CAUSE_STORE_MISALIGN 4'd6
+`define CAUSE_STORE_ACCESS   4'd7
 `define CAUSE_ECALL_M        4'd11
 
 // 异步中断 (mcause[31] = 1, 写入 mcause 时由 {1'b1, code} 组合)
+`define IRQ_SW               4'd3
 `define IRQ_TIMER            4'd7
 `define IRQ_EXT              4'd11
 

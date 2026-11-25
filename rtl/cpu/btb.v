@@ -2,14 +2,18 @@
 `include "rv32_defs.vh"
 
 // ============================================================================
-// btb.v — 两级流水 gshare 分支目标缓冲 (BTB 512 项 + PHT 8192 项, 纯 Verilog-2001)
+// btb.v — 全 32 位地址空间两级流水 gshare 分支目标缓冲（纯 Verilog-2001）
 // ----------------------------------------------------------------------------
-// 注意: 后续路线 A 接入 DDR2 大地址空间时, 需将 PC_TOP 扩至 32 并新增 flush_all 口。
+// 升级要点 (Stage 1A):
+//   - PC_TOP 默认扩至 32: 21-bit 完整高位 Tag + 30-bit 字对齐目标，支持 BootROM
+//     (0x0000_1000) 与 128 MB DDR2 (0x8000_0000..0x87FF_FFFF) 任意跨区跳转；
+//   - 新增单拍同步 flush_all 端口: FENCE.I (路线 A) 与 SFENCE.VMA (路线 B) 一拍清零
+//     全部 512 项有效位，vld 用 512-bit FF 向量实现，tag/tgt 仍可映射单块 RAMB36。
 // ============================================================================
 
 module btb #(
   parameter        IDX_BITS      = 9,
-  parameter        PC_TOP        = 14,
+  parameter        PC_TOP        = 32,
   parameter [31:0] PC_BASE       = `IMEM_BASE,
   parameter        PHT_BITS      = 13,
   parameter        GH_BITS       = 13,
@@ -17,6 +21,7 @@ module btb #(
 )(
   input  wire        clk,
   input  wire        rst,
+  input  wire        flush_all,
 
   // 兼容口 (恒不预测, 两级流水使用下方 p2_pc / q_* 端口)
   input  wire [31:0] pred_pc,
@@ -47,9 +52,10 @@ module btb #(
 
   localparam N        = (1 << IDX_BITS);
   localparam TAG_BITS = PC_TOP - IDX_BITS - 2;
-  localparam TGT_BITS = PC_TOP;
+  localparam TGT_BITS = PC_TOP - 2; // 字对齐目标 [PC_TOP-1:2]
 
-  reg                vld     [0:N-1];
+  // 有效位用打包寄存器向量: 支持 rst / flush_all 单拍全清
+  reg [N-1:0]        vld;
   reg [TAG_BITS-1:0] tag     [0:N-1];
   reg [TGT_BITS-1:0] tgt     [0:N-1];
   reg                is_ret  [0:N-1];
@@ -76,6 +82,7 @@ module btb #(
   ) u_bht (
     .clk           (clk),
     .rst           (rst),
+    .flush_all     (flush_all),
     .pred_pc       (pht_pc),
     .ctr_q         (q_ctr),
     .upd_en        (upd_en),
@@ -85,8 +92,16 @@ module btb #(
     .align_err_cnt (align_err_cnt)
   );
 
-  assign q_hit    = q_vld && (q_tag == q_tagexp);
-  assign q_target = {PC_BASE[31:PC_TOP], q_tgt};
+  assign q_hit = q_vld && (q_tag == q_tagexp);
+
+  generate
+    if (PC_TOP == 32) begin : gen_full32
+      assign q_target = {q_tgt, 2'b00};
+    end else begin : gen_part_pc
+      assign q_target = {PC_BASE[31:PC_TOP], q_tgt, 2'b00};
+    end
+  endgenerate
+
   assign q_is_ret = q_hit && q_isret_r;
   assign q_taken  = q_hit && (q_cond_r ? q_ctr[1] : 1'b1);
 
@@ -97,21 +112,22 @@ module btb #(
 
   integer i;
   initial begin
+    vld = {N{1'b0}};
     for (i = 0; i < N; i = i + 1) begin
-      vld[i]     = 1'b0;
       tag[i]     = {TAG_BITS{1'b0}};
       tgt[i]     = {TGT_BITS{1'b0}};
       is_ret[i]  = 1'b0;
       is_cond[i] = 1'b0;
     end
 `ifndef SYNTHESIS
-    $display("[btb] 2-STAGE gshare ACTIVE: BTB=%0d (IDX=%0d TAG=%0d) PHT=%0d GH=%0d HIST_ALL=%0d",
-             N, IDX_BITS, TAG_BITS, (1 << PHT_BITS), GH_BITS, HIST_ALL_CTRL);
+    $display("[btb] 2-STAGE gshare ACTIVE: BTB=%0d (IDX=%0d TAG=%0d PC_TOP=%0d) PHT=%0d GH=%0d",
+             N, IDX_BITS, TAG_BITS, PC_TOP, (1 << PHT_BITS), GH_BITS);
 `endif
   end
 
   always @(posedge clk) begin
-    if (rst) begin
+    if (rst || flush_all) begin
+      vld       <= {N{1'b0}};
       q_vld     <= 1'b0;
       q_isret_r <= 1'b0;
       q_cond_r  <= 1'b0;
@@ -123,7 +139,7 @@ module btb #(
       if (upd_en) begin
         vld[uidx]     <= 1'b1;
         tag[uidx]     <= utag;
-        tgt[uidx]     <= upd_target[PC_TOP-1:0];
+        tgt[uidx]     <= upd_target[PC_TOP-1:2];
         is_ret[uidx]  <= upd_is_ret;
         is_cond[uidx] <= upd_is_cond;
       end

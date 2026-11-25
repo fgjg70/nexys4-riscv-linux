@@ -3,6 +3,7 @@
 
 // ============================================================================
 // id_ex_reg.v — ID/EX 流水寄存器（纯 Verilog-2001，优先级 flush > bubble > stall）
+// Stage 1A: 新增 if_fault 传递取指访问/缺页异常至 EX 段统一仲裁。
 // ============================================================================
 
 module id_ex_reg (
@@ -12,6 +13,7 @@ module id_ex_reg (
   input  wire                stall,
   input  wire                bubble,
   input  wire                valid_in,
+  input  wire                if_fault_in,
   input  wire [31:0]         instr_in,
 
   input  wire [`CTRL_W-1:0]  ctrl_in,
@@ -28,6 +30,7 @@ module id_ex_reg (
 
   output reg  [`CTRL_W-1:0]  ctrl,
   output reg                 valid,
+  output reg                 if_fault,
   output reg  [31:0]         instr,
   output reg  [31:0]         pc,
   output reg  [31:0]         pc_plus4,
@@ -45,6 +48,7 @@ module id_ex_reg (
     if (rst) begin
       ctrl        <= `CTRL_NOP;
       valid       <= 1'b0;
+      if_fault    <= 1'b0;
       instr       <= 32'd0;
       pc          <= 32'd0;
       pc_plus4    <= 32'd0;
@@ -60,6 +64,7 @@ module id_ex_reg (
     else if (flush || bubble) begin
       ctrl        <= `CTRL_NOP;
       valid       <= 1'b0;
+      if_fault    <= 1'b0;
       instr       <= 32'd0;
       pc          <= 32'd0;
       pc_plus4    <= 32'd0;
@@ -75,6 +80,7 @@ module id_ex_reg (
     else if (!stall) begin
       ctrl        <= ctrl_in;
       valid       <= valid_in;
+      if_fault    <= if_fault_in;
       instr       <= instr_in;
       pc          <= pc_in;
       pc_plus4    <= pc_plus4_in;

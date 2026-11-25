@@ -18,9 +18,9 @@ module tb_sw;
   localparam        LOG_MAX     = 4096;
 
   // BTB 几何常量 (纯 Verilog-2001 不允许在 localparam 中引用层次化参数,
-  // 在 boot 时与 u_dut.u_btb.IDX_BITS / PC_TOP 显式断言一致, 且逐拍与 q_hit 自证)
+  // 在 boot 时与 u_dut.u_cpu.u_btb.IDX_BITS / PC_TOP 显式断言一致, 且逐拍与 q_hit 自证)
   localparam BTB_IDX_BITS = 9;
-  localparam BTB_PC_TOP   = 14;
+  localparam BTB_PC_TOP   = 32;
   localparam BTB_TAG_LSB  = BTB_IDX_BITS + 2;
   localparam BTB_TAG_W    = BTB_PC_TOP - BTB_TAG_LSB;
   localparam BTB_N        = (1 << BTB_IDX_BITS);
@@ -143,8 +143,8 @@ module tb_sw;
     expect_hazards   = 1024;
     expect_d2_cost   = 0;
 
-    if (BTB_IDX_BITS !== u_dut.u_btb.IDX_BITS || BTB_PC_TOP !== u_dut.u_btb.PC_TOP) begin
-      $display("[tb_sw] FAIL: BTB 几何常量与 u_dut.u_btb 实例参数不一致");
+    if (BTB_IDX_BITS !== u_dut.u_cpu.u_btb.IDX_BITS || BTB_PC_TOP !== u_dut.u_cpu.u_btb.PC_TOP) begin
+      $display("[tb_sw] FAIL: BTB 几何常量与 u_dut.u_cpu.u_btb 实例参数不一致");
       $display("  RESULT : FAIL");
       $finish;
     end
@@ -246,100 +246,100 @@ module tb_sw;
     begin
       idx = pc_in[BTB_IDX_BITS+1:2];
       tg  = pc_in[BTB_PC_TOP-1:BTB_TAG_LSB];
-      btb_has_entry = u_dut.u_btb.vld[idx] && (u_dut.u_btb.tag[idx] == tg);
+      btb_has_entry = u_dut.u_cpu.u_btb.vld[idx] && (u_dut.u_cpu.u_btb.tag[idx] == tg);
     end
   endfunction
 
   always @(posedge clk) begin
     if (!rst) begin
-      if (rep_hit_d !== u_dut.pred_hit)
+      if (rep_hit_d !== u_dut.u_cpu.pred_hit)
         n_btb_rep_bad = n_btb_rep_bad + 32'd1;
-      rep_hit_d <= btb_has_entry(u_dut.pc_next);
+      rep_hit_d <= btb_has_entry(u_dut.u_cpu.pc_next);
     end
   end
 
   reg [31:0] exp_instr;
   always @(posedge clk) begin
     if (!rst) begin
-      if (cycles > 32'd4 && !u_dut.if_id_flush && u_dut.if_pc != 32'd0) begin
-        exp_instr = u_dut.u_imem.mem[u_dut.if_pc[13:2]];
-        if (u_dut.if_instr !== exp_instr) begin
+      if (cycles > 32'd4 && !u_dut.u_cpu.if_id_flush && u_dut.u_cpu.if_pc != 32'd0) begin
+        exp_instr = u_dut.u_imem.mem[u_dut.u_cpu.if_pc[13:2]];
+        if (u_dut.u_cpu.if_instr !== exp_instr) begin
           n_align_err = n_align_err + 32'd1;
           if (n_align_err <= 32'd5)
             $display("[ALIGN] cycle %0d: if_pc=0x%08x if_instr=0x%08x 期望 0x%08x  <-- 取指错位!",
-                     cycles, u_dut.if_pc, u_dut.if_instr, exp_instr);
+                     cycles, u_dut.u_cpu.if_pc, u_dut.u_cpu.if_instr, exp_instr);
         end
       end
 
-      if (!u_dut.if_id_flush && !u_dut.pipe_stall) n_fetch     = n_fetch + 32'd1;
-      if (u_dut.redirect)                          n_redirect  = n_redirect + 32'd1;
-      if (u_dut.if_id_flush)                       n_flush     = n_flush + 32'd1;
-      if (u_dut.pipe_stall)                        n_stall     = n_stall + 32'd1;
-      if (u_dut.pipe_stall && u_dut.if_id_flush)   n_both      = n_both + 32'd1;
-      if (u_dut.lsu_stall)                         n_stall_lsu = n_stall_lsu + 32'd1;
+      if (!u_dut.u_cpu.if_id_flush && !u_dut.u_cpu.pipe_stall) n_fetch     = n_fetch + 32'd1;
+      if (u_dut.u_cpu.redirect)                                n_redirect  = n_redirect + 32'd1;
+      if (u_dut.u_cpu.if_id_flush)                             n_flush     = n_flush + 32'd1;
+      if (u_dut.u_cpu.pipe_stall)                              n_stall     = n_stall + 32'd1;
+      if (u_dut.u_cpu.pipe_stall && u_dut.u_cpu.if_id_flush)   n_both      = n_both + 32'd1;
+      if (u_dut.u_cpu.lsu_stall)                               n_stall_lsu = n_stall_lsu + 32'd1;
 
-      if (u_dut.mem_wb_ctrl != `CTRL_NOP) begin
+      if (u_dut.u_cpu.mem_wb_ctrl != `CTRL_NOP) begin
         n_wb_raw = n_wb_raw + 32'd1;
-        if (!u_dut.u_hazard.hold_mem) n_wb = n_wb + 32'd1;
+        if (!u_dut.u_cpu.u_hazard.hold_mem) n_wb = n_wb + 32'd1;
       end
-      if (u_dut.u_hazard.hold_mem) n_hold_mem = n_hold_mem + 32'd1;
+      if (u_dut.u_cpu.u_hazard.hold_mem) n_hold_mem = n_hold_mem + 32'd1;
 
       if (in_window) begin
         n_win_cycles = n_win_cycles + 32'd1;
-        if (!u_dut.if_id_flush && !u_dut.pipe_stall) n_win_fetch = n_win_fetch + 32'd1;
-        if (u_dut.pipe_stall)                        n_win_stall = n_win_stall + 32'd1;
-        if (u_dut.u_hazard.load_use)                 n_win_stall_lu = n_win_stall_lu + 32'd1;
-        if (u_dut.u_hazard.load_use && !lu_d)        n_win_lu_events = n_win_lu_events + 32'd1;
-        if (u_dut.u_hazard.load_use && (u_dut.lsu_stall || u_dut.md_busy))
+        if (!u_dut.u_cpu.if_id_flush && !u_dut.u_cpu.pipe_stall) n_win_fetch = n_win_fetch + 32'd1;
+        if (u_dut.u_cpu.pipe_stall)                              n_win_stall = n_win_stall + 32'd1;
+        if (u_dut.u_cpu.u_hazard.load_use)                       n_win_stall_lu = n_win_stall_lu + 32'd1;
+        if (u_dut.u_cpu.u_hazard.load_use && !lu_d)              n_win_lu_events = n_win_lu_events + 32'd1;
+        if (u_dut.u_cpu.u_hazard.load_use && (u_dut.u_cpu.lsu_stall || u_dut.u_cpu.md_busy))
           n_win_lu_overlap = n_win_lu_overlap + 32'd1;
       end
 
-      if (u_dut.u_hazard.load_use)          n_stall_lu  = n_stall_lu + 32'd1;
-      if (u_dut.u_hazard.load_use && !lu_d) n_lu_events = n_lu_events + 32'd1;
-      lu_d <= u_dut.u_hazard.load_use;
-      if (u_dut.lsu_stall)                  n_stall_ls  = n_stall_ls + 32'd1;
-      if (u_dut.md_busy)                    n_stall_ex  = n_stall_ex + 32'd1;
-      if (u_dut.ex_mem_ctrl[`CTRL_MEM_READ] && !u_dut.pipe_stall)
+      if (u_dut.u_cpu.u_hazard.load_use)          n_stall_lu  = n_stall_lu + 32'd1;
+      if (u_dut.u_cpu.u_hazard.load_use && !lu_d) n_lu_events = n_lu_events + 32'd1;
+      lu_d <= u_dut.u_cpu.u_hazard.load_use;
+      if (u_dut.u_cpu.lsu_stall)                  n_stall_ls  = n_stall_ls + 32'd1;
+      if (u_dut.u_cpu.md_busy)                    n_stall_ex  = n_stall_ex + 32'd1;
+      if (u_dut.u_cpu.ex_mem_ctrl[`CTRL_MEM_READ] && !u_dut.u_cpu.pipe_stall)
         n_load = n_load + 32'd1;
 
 `ifdef RAS_EN
-      if (u_dut.ex_is_call)   n_ras_push     = n_ras_push + 32'd1;
-      if (u_dut.ex_is_ret)    n_ras_pop      = n_ras_pop + 32'd1;
-      if (!u_dut.u_ras.empty) n_ras_nonempty = n_ras_nonempty + 32'd1;
-      if (u_dut.pred_is_ret) begin
+      if (u_dut.u_cpu.ex_is_call)   n_ras_push     = n_ras_push + 32'd1;
+      if (u_dut.u_cpu.ex_is_ret)    n_ras_pop      = n_ras_pop + 32'd1;
+      if (!u_dut.u_cpu.u_ras.empty) n_ras_nonempty = n_ras_nonempty + 32'd1;
+      if (u_dut.u_cpu.pred_is_ret) begin
         n_pred_is_ret = n_pred_is_ret + 32'd1;
-        if (u_dut.ras_top !== u_dut.btb_pred_target)
+        if (u_dut.u_cpu.ras_top !== u_dut.u_cpu.btb_pred_target)
           n_ras_diff = n_ras_diff + 32'd1;
       end
 `endif
 
-      if (u_dut.id_ex_ctrl[`CTRL_PC_SEL] != `PC_NEXT && !u_dut.redir_kill) begin
-        if (!u_dut.pipe_stall) n_ctrl = n_ctrl + 32'd1;
-        if (u_dut.redirect_raw) n_mis = n_mis + 32'd1;
+      if (u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL] != `PC_NEXT && !u_dut.u_cpu.redir_kill) begin
+        if (!u_dut.u_cpu.pipe_stall) n_ctrl = n_ctrl + 32'd1;
+        if (u_dut.u_cpu.redirect_raw) n_mis = n_mis + 32'd1;
       end
 
-      if (u_dut.redirect_raw && !u_dut.pipe_stall && !u_dut.redir_kill) begin
-        if      (u_dut.id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR) n_mis_br   = n_mis_br + 32'd1;
-        else if (u_dut.id_ex_ctrl[`CTRL_PC_SEL] == `PC_J)  n_mis_jal  = n_mis_jal + 32'd1;
-        else if (u_dut.id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR) n_mis_jalr = n_mis_jalr + 32'd1;
+      if (u_dut.u_cpu.redirect_raw && !u_dut.u_cpu.pipe_stall && !u_dut.u_cpu.redir_kill) begin
+        if      (u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR) n_mis_br   = n_mis_br + 32'd1;
+        else if (u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL] == `PC_J)  n_mis_jal  = n_mis_jal + 32'd1;
+        else if (u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR) n_mis_jalr = n_mis_jalr + 32'd1;
       end
 
-      if (u_dut.id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR && !u_dut.redir_kill) begin
-        if (btb_has_entry(u_dut.id_ex_pc)) n_br_hit   = n_br_hit + 32'd1;
-        else                               n_br_nohit = n_br_nohit + 32'd1;
-        if (u_dut.redirect_raw && !u_dut.pipe_stall) begin
-          if (btb_has_entry(u_dut.id_ex_pc)) n_mis_br_dir   = n_mis_br_dir + 32'd1;
-          else                               n_mis_br_nohit = n_mis_br_nohit + 32'd1;
+      if (u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR && !u_dut.u_cpu.redir_kill) begin
+        if (btb_has_entry(u_dut.u_cpu.id_ex_pc)) n_br_hit   = n_br_hit + 32'd1;
+        else                                     n_br_nohit = n_br_nohit + 32'd1;
+        if (u_dut.u_cpu.redirect_raw && !u_dut.u_cpu.pipe_stall) begin
+          if (btb_has_entry(u_dut.u_cpu.id_ex_pc)) n_mis_br_dir   = n_mis_br_dir + 32'd1;
+          else                                     n_mis_br_nohit = n_mis_br_nohit + 32'd1;
         end
       end
 
-      if (u_dut.id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR && !u_dut.redir_kill) begin
+      if (u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR && !u_dut.u_cpu.redir_kill) begin
         n_bcond = n_bcond + 32'd1;
-        if (u_dut.redirect) n_br_taken = n_br_taken + 32'd1;
+        if (u_dut.u_cpu.redirect) n_br_taken = n_br_taken + 32'd1;
       end
-      if (u_dut.redirect && !u_dut.redir_kill) begin
-        if (u_dut.id_ex_ctrl[`CTRL_PC_SEL] == `PC_J)  n_jal  = n_jal + 32'd1;
-        if (u_dut.id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR) n_jalr = n_jalr + 32'd1;
+      if (u_dut.u_cpu.redirect && !u_dut.u_cpu.redir_kill) begin
+        if (u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL] == `PC_J)  n_jal  = n_jal + 32'd1;
+        if (u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR) n_jalr = n_jalr + 32'd1;
       end
     end
   end
@@ -354,17 +354,17 @@ module tb_sw;
   always @(posedge clk) begin
     if (!rst && trace_on && cycles >= 32'd2140 && cycles < 32'd2200)
       $display("[trace] c=%0d pc=%08x pT=%b pTgt=%08x mis=%b stall=%b idpc=%08x sel=%0d aT=%b aTgt=%08x exT=%b",
-               cycles, dbg_pc, u_dut.pred_taken, u_dut.pred_target,
-               u_dut.redirect_raw, u_dut.pipe_stall,
-               u_dut.id_ex_pc, u_dut.id_ex_ctrl[`CTRL_PC_SEL],
-               u_dut.actual_taken, u_dut.actual_target, u_dut.ex_taken);
+               cycles, dbg_pc, u_dut.u_cpu.pred_taken, u_dut.u_cpu.pred_target,
+               u_dut.u_cpu.redirect_raw, u_dut.u_cpu.pipe_stall,
+               u_dut.u_cpu.id_ex_pc, u_dut.u_cpu.id_ex_ctrl[`CTRL_PC_SEL],
+               u_dut.u_cpu.actual_taken, u_dut.u_cpu.actual_target, u_dut.u_cpu.ex_taken);
   end
 
   always @(posedge clk) begin
-    if (!rst && trace_on && u_dut.wb_reg_write && (u_dut.wb_rd == 5'd5)
-        && (u_dut.wb_data >= 32'h8000_03a0) && (u_dut.wb_data <= 32'h8000_03d0))
+    if (!rst && trace_on && u_dut.u_cpu.wb_reg_write && (u_dut.u_cpu.wb_rd == 5'd5)
+        && (u_dut.u_cpu.wb_data >= 32'h8000_03a0) && (u_dut.u_cpu.wb_data <= 32'h8000_03d0))
       $display("[x5] c=%0d  at_pc=0x%08x   x5 <- 0x%08x",
-               cycles, u_dut.mem_wb_pc_plus4 - 32'd4, u_dut.wb_data);
+               cycles, u_dut.u_cpu.mem_wb_pc_plus4 - 32'd4, u_dut.u_cpu.wb_data);
   end
 
   // ---- 日志 dump 与收尾断言 ----
@@ -460,7 +460,7 @@ module tb_sw;
              n_pred_is_ret, n_ras_diff);
     n_ret_entries = 32'd0;
     for (bi = 0; bi < BTB_N; bi = bi + 1)
-      if (u_dut.u_btb.vld[bi] && u_dut.u_btb.is_ret[bi])
+      if (u_dut.u_cpu.u_btb.vld[bi] && u_dut.u_cpu.u_btb.is_ret[bi])
         n_ret_entries = n_ret_entries + 32'd1;
     $display("  BTB 中 is_ret=1 的表项 = %0d", n_ret_entries);
 `endif

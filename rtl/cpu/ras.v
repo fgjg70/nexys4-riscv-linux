@@ -10,6 +10,7 @@ module ras #(
 )(
   input  wire        clk,
   input  wire        rst,
+  input  wire        flush_all,
 
   input  wire        push_en,
   input  wire [31:0] push_pc,
@@ -37,7 +38,7 @@ module ras #(
   end
 
   always @(posedge clk) begin
-    if (rst) begin
+    if (rst || flush_all) begin
       sp <= {PW{1'b0}};
     end
     else begin
