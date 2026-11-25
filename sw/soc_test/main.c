@@ -48,6 +48,7 @@
 #define VGA_CTRL         (*(volatile uint32_t *)0x10002000u)
 #define VGA_STAT         (*(volatile uint32_t *)0x10002004u)
 #define VGA_FB_BASE      (*(volatile uint32_t *)0x10002008u)
+#define VGA_RES_ID       (*(volatile uint32_t *)0x1000200Cu)
 
 #define CAM_CTRL         (*(volatile uint32_t *)0x10003000u)
 #define CAM_STAT         (*(volatile uint32_t *)0x10003004u)
@@ -285,6 +286,15 @@ static int test_plic_uart(void) {
     UART_LCR     = 0x03u;
     UART_IIR_FCR = 0x07u;
 
+    /* 验证 NS16550A THRE IIR 读清与 IER[1] 0->1 重触发 (杜绝 Linux 8250 中断风暴) */
+    UART_IER = 0x02u;
+    if ((UART_IIR_FCR & 0xFFu) != 0xC2u) return 53;
+    if ((UART_IIR_FCR & 0xFFu) != 0xC1u) return 54;
+    UART_IER = 0x00u;
+    UART_IER = 0x02u;
+    if ((UART_IIR_FCR & 0xFFu) != 0xC2u) return 55;
+    UART_IER = 0x00u;
+
     /* 打开内部环回 MCR[4]=1 + UART RX 中断 IER[0]=1 */
     UART_MCR = 0x10u;
     UART_IER = 0x01u;
@@ -376,6 +386,7 @@ static int test_stage2_periphs(void) {
     if ((VGA_CTRL & 0x7u) != 0x1u) return 72; /* 复位默认彩条使能 */
     VGA_FB_BASE = 0x82000000u;
     if (VGA_FB_BASE != 0x82000000u) return 73;
+    if (VGA_RES_ID  != 0x028001E0u) return 78; /* 640x480 只读标识 */
 
     /* OV5640 寄存器与空 FIFO 探测 */
     if ((CAM_CTRL & 0x8u) == 0u) return 74; /* 复位默认 CAM_RST_N=1 */

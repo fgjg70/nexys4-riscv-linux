@@ -30,14 +30,14 @@ digital/
 
 ## Vivado 2018.3 布局布线实测（`xc7a100tcsg324-1`，`rv32_soc` 完整含全部外设）
 
-| 指标 | 实测占用 / 结果 | 占比 / 裕量 |
+| 指标 | 实测占用 / 结果 | 占比 / 裕量（两轮全局审计优化后） |
 |---|---|---|
-| **Slice LUTs** | **6,358** / 63,400（含 232 Distributed RAM） | **10.03%** |
-| **Slice Registers (FF)** | **3,951** / 126,800（**0 Latch**） | **3.12%** |
-| **Block RAM Tile** | **8** / 135（6×`RAMB36E1` + 4×`RAMB18E1`） | **5.93%** |
-| **DSP48E1** | **8** / 240 | **3.33%** |
-| **`sys_clk` 布线后主频** | **79.05 MHz**（12.650 ns） | 满足 MIG `ui_clk` **75.0 MHz**（+0.683 ns 正裕量） |
-| **`cam_pclk` / `vga_clk`** | 48 MHz 裕量 +15.141 ns / 25 MHz 裕量 +35.916 ns | 0 组合环 / 0 Critical Warnings |
+| **Slice LUTs** | **5,742** / 63,400（含 216 Distributed RAM） | **9.06%**（较基线 `-616 LUT` / `-9.7%`） |
+| **Slice Registers (FF)** | **3,427** / 126,800（**0 Latch**） | **2.70%**（较基线 `-524 FF` / `-13.3%`） |
+| **Block RAM Tile** | **8** / 135（6×`RAMB36E1` + 4×`RAMB18E1`） | **5.93%**（BTB 元数据合并进 BRAM，零新增块） |
+| **DSP48E1** | **4** / 240 | **1.67%**（统一 33×33 乘法器，较基线 **-50%**） |
+| **`sys_clk` 布线后主频** | **93.36 MHz**（10.711 ns，`TNS = -18.1 ns`） | 满足 MIG `ui_clk` **75.0 MHz**（**+2.622 ns** 正裕量） |
+| **`cam_pclk` / `vga_clk`** | 48 MHz 裕量 +14.595 ns / 25 MHz 裕量 +36.010 ns | 0 组合环 / 0 Critical Warnings |
 
 ---
 
@@ -77,4 +77,4 @@ python sw/soc_test/build.py
 vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs build_vivado
 ```
 
-详细架构、JA+JB OV5640 引脚表与分阶段路线见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，迁移溯源见 [docs/MIGRATION-NOTES.md](docs/MIGRATION-NOTES.md)。
+详细架构、JA+JB OV5640 引脚表与分阶段路线见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，两轮逐模块与全路径全局审计优化记录见 [docs/AUDIT_OPTIMIZATION.md](docs/AUDIT_OPTIMIZATION.md)，迁移溯源见 [docs/MIGRATION-NOTES.md](docs/MIGRATION-NOTES.md)。

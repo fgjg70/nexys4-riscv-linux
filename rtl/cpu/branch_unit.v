@@ -15,9 +15,10 @@ module branch_unit #(
   output reg             taken
 );
 
+  // 复用单组 32-bit 无符号比较器 + 符号位修正，减少 CARRY4 进位链与 ex_rs1/ex_rs2 负载
   wire eq  = (rs1 == rs2);
-  wire lt  = ($signed(rs1) < $signed(rs2));
   wire ltu = (rs1 < rs2);
+  wire lt  = (rs1[XLEN-1] ^ rs2[XLEN-1]) ? rs1[XLEN-1] : ltu;
 
   always @(*) begin
     case (branch_type)

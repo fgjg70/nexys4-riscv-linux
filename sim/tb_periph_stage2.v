@@ -409,6 +409,7 @@ module tb_periph_stage2;
   reg         rd_pipe_v1, rd_pipe_v2;
   reg [5:0]   rd_pipe_a1, rd_pipe_a2;
   integer     bi, mi;
+  integer     mig_rd_cmd_cnt;
 
   always @(posedge sys_clk or posedge sys_rst) begin
     if (sys_rst) begin
@@ -426,6 +427,7 @@ module tb_periph_stage2;
       rd_pipe_v2        <= 1'b0;
       rd_pipe_a1        <= 6'd0;
       rd_pipe_a2        <= 6'd0;
+      mig_rd_cmd_cnt    <= 0;
       for (mi = 0; mi < 64; mi = mi + 1) ddr_mem[mi] <= 128'd0;
     end
     else begin
@@ -444,8 +446,9 @@ module tb_periph_stage2;
       // 接收命令口
       if (app_en && app_rdy) begin
         if (app_cmd == 3'b001) begin
-          rd_pipe_v1 <= 1'b1;
-          rd_pipe_a1 <= app_addr[8:3];
+          rd_pipe_v1     <= 1'b1;
+          rd_pipe_a1     <= app_addr[8:3];
+          mig_rd_cmd_cnt <= mig_rd_cmd_cnt + 1;
         end
         else if (app_cmd == 3'b000) begin
           wr_cmd_pend <= 1'b1;
@@ -512,7 +515,7 @@ module tb_periph_stage2;
   // 主测试序列
   // ==========================================================================
   reg [31:0] rd_val;
-  integer    k, px_i, hs_low_cnt, vs_low_cnt;
+  integer    k, px_i, hs_low_cnt, vs_low_cnt, rd_cnt_before;
   reg [15:0] exp_px;
 
   initial begin
@@ -564,6 +567,8 @@ module tb_periph_stage2;
     vga_mmio_wr(32'h08, 32'h8200_0000);
     vga_mmio_rd(32'h08, rd_val);
     check_eq(rd_val, 32'h8200_0000, "vga_fb_base");
+    vga_mmio_rd(32'h0C, rd_val);
+    check_eq(rd_val, 32'h0280_01E0, "vga_res_id_640x480");
 
     // 扫描第一行核对 8 色彩条与 HS 脉宽 (96 像素)
     hs_low_cnt = 0;
@@ -675,10 +680,30 @@ module tb_periph_stage2;
     cam_mmio_wr(32'h04, 32'b100); // W1C
     check_eq({31'd0, cam_irq}, 32'd0, "cam_irq_cleared");
 
+    // Round 1 新特性验证: CTRL[7]=BYTE_SWAP + CTRL[6]=VSYNC_INV + CTRL[8]=FIFO_CLR
+    @(negedge cam_pclk); cam_vsync = 1'b1; cam_href = 1'b0;
+    cam_mmio_wr(32'h00, 32'b0_1101_1000); // BYTE_SWAP=1, VSYNC_INV=1, CAP_EN=1, CAM_RST_N=1
+    repeat (6) @(posedge cam_pclk);
+    @(negedge cam_pclk); cam_href = 1'b1;
+    cam_d = 8'h34; @(negedge cam_pclk);
+    cam_d = 8'h12; @(negedge cam_pclk);
+    cam_d = 8'h78; @(negedge cam_pclk);
+    cam_d = 8'h56; @(negedge cam_pclk);
+    cam_href = 1'b0;
+    repeat (6) @(posedge sys_clk);
+    cam_mmio_rd(32'h10, rd_val);
+    check_eq(rd_val, 32'h0001_1234, "cam_byte_swap_px0");
+    // 仍有第 2 个像素在 FIFO 中，使用 CTRL[8]=FIFO_CLR 软清 FIFO
+    cam_mmio_wr(32'h00, 32'b1_0000_1000); // FIFO_CLR=1, CAP_EN=0, CAM_RST_N=1
+    repeat (8) @(posedge cam_pclk);
+    repeat (6) @(posedge sys_clk);
+    cam_mmio_rd(32'h10, rd_val);
+    check_eq(rd_val, 32'd0, "cam_fifo_clr_empty");
+
     // ------------------------------------------------------------------------
-    // Test 5: MIG 7 Series 128-bit Native 桥随机反压 + 全 4 lane + 字节写掩码
+    // Test 5: MIG 7 Series 128-bit Native 桥随机反压 + 4x 读行缓冲 + 写命中失效
     // ------------------------------------------------------------------------
-    $display("[stage2] 5/5 Testing mig_ddr2_bridge (random app_rdy/wdf_rdy backpressure)...");
+    $display("[stage2] 5/5 Testing mig_ddr2_bridge (backpressure + 128b read-line buffer)...");
     mig_calib = 1'b1;
     // 写入 16 个连续 32-bit 字 (覆盖 4 个 128-bit 突发块 × 全部 4 个 lane)
     for (k = 0; k < 16; k = k + 1) begin
@@ -690,7 +715,8 @@ module tb_periph_stage2;
     mig_wr(32'h8000_0008, 32'h00BB_0000, 4'b0100); // lane 2 byte 2 -> 0xBB
     mig_wr(32'h8000_000C, 32'h0000_00CC, 4'b0001); // lane 3 byte 0 -> 0xCC
 
-    // 读回校验全部 16 个字 (覆盖全部 4 个 lane 及字节掩码)
+    // 读回校验全部 16 个字，同时验证 128-bit 读行缓冲将 16 次字读压缩为精确 4 次 MIG 读突发!
+    rd_cnt_before = mig_rd_cmd_cnt;
     for (k = 0; k < 16; k = k + 1) begin : verify_mig
       reg [31:0] exp_w;
       exp_w = 32'hC0DE_0000 ^ (k * 32'h0102_0304);
@@ -701,6 +727,16 @@ module tb_periph_stage2;
       mig_rd(32'h8000_0000 + (k * 4), rd_val);
       check_eq(rd_val, exp_w, "mig_ddr2_word_match");
     end
+    check_eq(mig_rd_cmd_cnt - rd_cnt_before, 32'd4, "mig_rd_buf_4x_burst");
+
+    // 写命中当前缓存的 128-bit 行 (line 3: 0x8000_0030..0x8000_003C) 必须失效 rd_buf -> 读回新值
+    rd_cnt_before = mig_rd_cmd_cnt;
+    mig_wr(32'h8000_0038, 32'hDEAD_BEEF, 4'b1111);
+    mig_rd(32'h8000_0038, rd_val);
+    check_eq(rd_val, 32'hDEAD_BEEF, "mig_rd_buf_snoop_inval");
+    mig_rd(32'h8000_003C, rd_val);
+    check_eq(rd_val, 32'hC0DE_0000 ^ (15 * 32'h0102_0304), "mig_rd_buf_refill_hit");
+    check_eq(mig_rd_cmd_cnt - rd_cnt_before, 32'd1, "mig_rd_buf_1_refetch");
 
     if (fail_cnt == 0) begin
       $display("=================================================");

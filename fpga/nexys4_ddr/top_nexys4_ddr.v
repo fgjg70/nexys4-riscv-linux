@@ -87,10 +87,27 @@ module top_nexys4_ddr (
     .locked   (mmcm_locked)
   );
 
+`ifdef SYNTHESIS
+  // Xilinx 7-Series 推荐时钟转发原语: 避免全局时钟网线直接下布线至普通 IOB 引脚
+  ODDR #(
+    .DDR_CLK_EDGE ("OPPOSITE_EDGE"),
+    .INIT         (1'b0),
+    .SRTYPE       ("SYNC")
+  ) u_cam_xclk_oddr (
+    .Q  (CAM_XCLK),
+    .C  (clk_24m),
+    .CE (1'b1),
+    .D1 (1'b1),
+    .D2 (1'b0),
+    .R  (1'b0),
+    .S  (1'b0)
+  );
+`else
   assign CAM_XCLK = clk_24m;
+`endif
 
   // ---- MIG 7 Series 复位同步 (低有效 sys_rst 同步至 clk_200m) ----
-  reg [1:0] mig_rstn_sync;
+  (* ASYNC_REG = "TRUE" *) reg [1:0] mig_rstn_sync;
   always @(posedge clk_200m or negedge CPU_RESETN) begin
     if (!CPU_RESETN) mig_rstn_sync <= 2'b00;
     else             mig_rstn_sync <= {mig_rstn_sync[0], mmcm_locked};
@@ -159,7 +176,7 @@ module top_nexys4_ddr (
   // ---- 各时钟域复位同步 ----
   // SoC 主时钟 (ui_clk = 75 MHz): 等待 MMCM 锁定且 MIG 完成 DDR2 校准后释放复位
   wire soc_rst_raw = ui_clk_sync_rst || !mmcm_locked || !init_calib_complete;
-  reg [1:0] soc_rst_sync;
+  (* ASYNC_REG = "TRUE" *) reg [1:0] soc_rst_sync;
   always @(posedge ui_clk or posedge soc_rst_raw) begin
     if (soc_rst_raw) soc_rst_sync <= 2'b11;
     else             soc_rst_sync <= {soc_rst_sync[0], 1'b0};
@@ -168,7 +185,7 @@ module top_nexys4_ddr (
 
   // VGA 像素时钟域 (25 MHz) 复位
   wire vga_rst_raw = !CPU_RESETN || !mmcm_locked;
-  reg [1:0] vga_rst_sync;
+  (* ASYNC_REG = "TRUE" *) reg [1:0] vga_rst_sync;
   always @(posedge clk_25m or posedge vga_rst_raw) begin
     if (vga_rst_raw) vga_rst_sync <= 2'b11;
     else             vga_rst_sync <= {vga_rst_sync[0], 1'b0};

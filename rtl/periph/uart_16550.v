@@ -4,16 +4,11 @@
 // ============================================================================
 // uart_16550.v — 标准 NS16550A 兼容串口 (32-bit 对齐 reg-shift=2, 纯 Verilog-2001)
 // ----------------------------------------------------------------------------
-// 基址 0x1000_0000，直接兼容 Linux 8250 串口驱动与 earlycon=uart8250,mmio32,0x10000000。
-// 寄存器 (按 addr[4:2] 寻址，每寄存器占 4 字节):
-//   0 (+0x00): RBR (读出 RX FIFO) / THR (写入 TX FIFO) / DLL (DLAB=1)
-//   1 (+0x04): IER ([0]=RX 数据中断, [1]=TX 空中断)    / DLM (DLAB=1)
-//   2 (+0x08): IIR (只读中断识别) / FCR (写清 RX/TX FIFO)
-//   3 (+0x0C): LCR ([7]=DLAB)
-//   4 (+0x10): MCR ([4]=内部环回 LOOP)
-//   5 (+0x14): LSR ([0]=DR, [5]=THRE, [6]=TEMT)
-//   6 (+0x18): MSR (0xB0 调制解调就绪)
-//   7 (+0x1C): SCR (8-bit 暂存寄存器，Linux 8250 探测芯片类型用)
+// Round 1 审计加固 (完全对齐 Linux serial8250 驱动规范):
+//   - 实现标准 thre_ip 锁存: 读 IIR 返回 THRE(0xC2) 或写 THR 时自动清中断，杜绝 THRE 风暴；
+//   - 新增 LSR[1] Overrun Error (OE) 标志 (RX FIFO 满溢出置位，读 LSR 清除)；
+//   - 外部 rx_s1/rx_s2 标注 (* ASYNC_REG = "TRUE" *)；
+//   - 收发位周期计数器收敛为 21-bit，消除 32-bit ROM 综合告警并节省逻辑面积。
 // ============================================================================
 
 module uart_16550 #(
@@ -40,7 +35,7 @@ module uart_16550 #(
   output reg  [7:0]  tx_push_byte
 );
 
-  localparam integer DEFAULT_BIT_CYCLES = (CLK_HZ / BAUD_HZ);
+  localparam [20:0] DEFAULT_BIT_CYCLES = (CLK_HZ / BAUD_HZ);
 
   // 控制/状态寄存器
   reg [7:0] ier;
@@ -49,6 +44,8 @@ module uart_16550 #(
   reg [7:0] scr;
   reg [7:0] dll;
   reg [7:0] dlm;
+  reg       thre_ip;    // 标准 NS16550A THRE 中断挂起锁存
+  reg       lsr_oe;     // LSR[1] RX Overrun Error (读 LSR 清零)
 
   wire dlab     = lcr[7];
   wire loop_en  = mcr[4];
@@ -67,49 +64,54 @@ module uart_16550 #(
   wire rx_empty = (rx_cnt == 5'd0);
   wire rx_full  = (rx_cnt == 5'd16);
 
-  // 波特率分频: 软件未改 DLL/DLM (为 0) 时使用默认 DEFAULT_BIT_CYCLES，
-  // 否则按标准 16550 口径 divisor * 16 (若 divisor 极小则最小 2 拍加速仿真)
+  // 波特率分频: 最大 65535 * 16 = 1,048,560 < 2^20，21-bit 留足 1.5 倍采样余量
   wire [15:0] div_reg    = {dlm, dll};
-  wire [31:0] bit_cycles = (div_reg == 16'd0) ? DEFAULT_BIT_CYCLES
-                         : ({12'd0, div_reg, 4'b0000});
+  wire [20:0] bit_cycles = (div_reg == 16'd0) ? DEFAULT_BIT_CYCLES
+                         : {1'b0, div_reg, 4'b0000};
+  wire [20:0] bit_reload = (bit_cycles > 21'd1) ? (bit_cycles - 21'd1) : 21'd0;
 
   // ---- TX 移位器 ----
   reg        tx_busy;
   reg [9:0]  tx_sh;
   reg [3:0]  tx_bits;
-  reg [31:0] tx_cnt_cyc;
+  reg [20:0] tx_cnt_cyc;
 
-  // ---- RX 移位器 (2 级同步防亚稳态 + 支持 MCR[4] 内部环回) ----
+  // ---- RX 移位器 (2 级 ASYNC_REG 同步 + 支持 MCR[4] 内部环回) ----
   wire rxd_mux = loop_en ? uart_txd : uart_rxd;
-  reg  rx_s1, rx_s2;
+  (* ASYNC_REG = "TRUE" *) reg rx_s1;
+  (* ASYNC_REG = "TRUE" *) reg rx_s2;
   reg        rx_busy;
   reg [3:0]  rx_bits;
   reg [7:0]  rx_sh;
-  reg [31:0] rx_cnt_cyc;
+  reg [20:0] rx_cnt_cyc;
   reg        rx_done_pulse;
   reg [7:0]  rx_done_byte;
 
   // 中断逻辑 (优先级: RX Data Available > THRE)
   wire rx_irq_req = ier[0] && !rx_empty;
-  wire tx_irq_req = ier[1] && tx_empty;
+  wire tx_irq_req = ier[1] && thre_ip && tx_empty;
   assign irq_o    = rx_irq_req || tx_irq_req;
 
   wire [7:0] iir_val = rx_irq_req ? 8'hC4    // FIFOs enabled + Received Data Available
                      : tx_irq_req ? 8'hC2    // FIFOs enabled + THR Empty
                      :              8'hC1;   // FIFOs enabled + No interrupt pending
-  wire [7:0] lsr_val = {1'b0, (tx_empty && !tx_busy), tx_empty, 4'b0000, !rx_empty};
+  wire [7:0] lsr_val = {1'b0, (tx_empty && !tx_busy), tx_empty, 3'b000, lsr_oe, !rx_empty};
 
   wire [2:0] reg_sel = addr[4:2];
   wire       do_req  = req && !ack;
 
-  // 读写事件解码 (单拍脉冲，方便 FIFO 头尾指针同拍处理)
-  wire cpu_tx_push  = do_req && we && !dlab && (reg_sel == 3'd0) && !tx_full;
+  // 读写事件解码
+  wire cpu_tx_push  = do_req && we  && !dlab && (reg_sel == 3'd0) && !tx_full;
   wire cpu_rx_pop   = do_req && !we && !dlab && (reg_sel == 3'd0) && !rx_empty;
-  wire cpu_tx_clear = do_req && we && (reg_sel == 3'd2) && wdata[2];
-  wire cpu_rx_clear = do_req && we && (reg_sel == 3'd2) && wdata[1];
+  wire cpu_tx_clear = do_req && we  && (reg_sel == 3'd2) && wdata[2];
+  wire cpu_rx_clear = do_req && we  && (reg_sel == 3'd2) && wdata[1];
+  wire cpu_iir_read = do_req && !we && (reg_sel == 3'd2);
+  wire cpu_lsr_read = do_req && !we && (reg_sel == 3'd5);
+  wire cpu_ier_wr   = do_req && we  && !dlab && (reg_sel == 3'd1);
 
   wire tx_pop_now   = !tx_busy && !tx_empty && !cpu_tx_clear;
   wire rx_push_now  = rx_done_pulse && !rx_full && !cpu_rx_clear;
+  wire rx_ovf_now   = rx_done_pulse &&  rx_full && !cpu_rx_clear;
 
   integer i;
   always @(posedge clk or posedge rst) begin
@@ -122,6 +124,8 @@ module uart_16550 #(
       scr           <= 8'd0;
       dll           <= 8'd0;
       dlm           <= 8'd0;
+      thre_ip       <= 1'b1;   // 复位时 TX FIFO 为空，使能 IER[1] 即刻触发 THRE
+      lsr_oe        <= 1'b0;
       tx_head       <= 4'd0;
       tx_tail       <= 4'd0;
       tx_cnt        <= 5'd0;
@@ -132,13 +136,13 @@ module uart_16550 #(
       tx_busy       <= 1'b0;
       tx_sh         <= 10'h3FF;
       tx_bits       <= 4'd0;
-      tx_cnt_cyc    <= 32'd0;
+      tx_cnt_cyc    <= 21'd0;
       rx_s1         <= 1'b1;
       rx_s2         <= 1'b1;
       rx_busy       <= 1'b0;
       rx_bits       <= 4'd0;
       rx_sh         <= 8'd0;
-      rx_cnt_cyc    <= 32'd0;
+      rx_cnt_cyc    <= 21'd0;
       rx_done_pulse <= 1'b0;
       rx_done_byte  <= 8'd0;
       tx_push_pulse <= 1'b0;
@@ -152,6 +156,22 @@ module uart_16550 #(
       ack           <= do_req;
       tx_push_pulse <= cpu_tx_push;
       if (cpu_tx_push) tx_push_byte <= wdata[7:0];
+
+      // ---- LSR Overrun 标志维护 ----
+      if (rx_ovf_now)        lsr_oe <= 1'b1;
+      else if (cpu_lsr_read) lsr_oe <= 1'b0;
+
+      // ---- 标准 NS16550A THRE 中断挂起锁存维护 ----
+      if (cpu_tx_push) begin
+        thre_ip <= 1'b0;
+      end
+      else if (cpu_tx_clear || (tx_pop_now && (tx_cnt == 5'd1)) ||
+               (cpu_ier_wr && wdata[1] && !ier[1] && tx_empty)) begin
+        thre_ip <= 1'b1;
+      end
+      else if (cpu_iir_read && !rx_irq_req && tx_irq_req) begin
+        thre_ip <= 1'b0;
+      end
 
       // ---- CPU 寄存器读写 ----
       if (do_req) begin
@@ -209,11 +229,11 @@ module uart_16550 #(
         tx_busy    <= 1'b1;
         tx_sh      <= {1'b1, tx_fifo[tx_head], 1'b0};
         tx_bits    <= 4'd10;
-        tx_cnt_cyc <= (bit_cycles > 32'd1) ? (bit_cycles - 32'd1) : 32'd0;
+        tx_cnt_cyc <= bit_reload;
         uart_txd   <= 1'b0; // 立即拉低起始位
       end
       else if (tx_busy) begin
-        if (tx_cnt_cyc == 32'd0) begin
+        if (tx_cnt_cyc == 21'd0) begin
           if (tx_bits == 4'd1) begin
             tx_busy  <= 1'b0;
             uart_txd <= 1'b1;
@@ -222,11 +242,11 @@ module uart_16550 #(
             tx_sh      <= {1'b1, tx_sh[9:1]};
             uart_txd   <= tx_sh[1];
             tx_bits    <= tx_bits - 4'd1;
-            tx_cnt_cyc <= (bit_cycles > 32'd1) ? (bit_cycles - 32'd1) : 32'd0;
+            tx_cnt_cyc <= bit_reload;
           end
         end
         else begin
-          tx_cnt_cyc <= tx_cnt_cyc - 32'd1;
+          tx_cnt_cyc <= tx_cnt_cyc - 21'd1;
         end
       end
 
@@ -239,15 +259,15 @@ module uart_16550 #(
         if (rx_s2 == 1'b0) begin
           rx_busy    <= 1'b1;
           rx_bits    <= 4'd0;
-          rx_cnt_cyc <= (bit_cycles >> 1) + bit_cycles; // 1.5 位后采样 bit 0 中心
+          rx_cnt_cyc <= {1'b0, bit_cycles[20:1]} + bit_cycles; // 1.5 位后采样 bit 0 中心
         end
       end
       else begin
-        if (rx_cnt_cyc == 32'd0) begin
+        if (rx_cnt_cyc == 21'd0) begin
           if (rx_bits < 4'd8) begin
             rx_sh      <= {rx_s2, rx_sh[7:1]};
             rx_bits    <= rx_bits + 4'd1;
-            rx_cnt_cyc <= (bit_cycles > 32'd1) ? (bit_cycles - 32'd1) : 32'd0;
+            rx_cnt_cyc <= bit_reload;
           end
           else begin
             rx_busy       <= 1'b0;
@@ -256,7 +276,7 @@ module uart_16550 #(
           end
         end
         else begin
-          rx_cnt_cyc <= rx_cnt_cyc - 32'd1;
+          rx_cnt_cyc <= rx_cnt_cyc - 21'd1;
         end
       end
 

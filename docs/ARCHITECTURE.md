@@ -56,7 +56,11 @@
 | 首轮基线 | 修复 `icache`/`dcache`/`async_fifo` 独立无复位 BRAM 推断 | 6,304 (9.94%) | 3,908 | 9 (6.67%) | 8 | 54.4 MHz |
 | 二轮优化 | `dcache`/`icache` Tag 改分布式 RAM + MEM 拍预计算 `q_hit_r` | 6,340 (10.00%) | 3,949 | 8 (5.93%) | 8 | 56.5 MHz |
 | 三轮优化 | `plic.irq_ext` 与 `clint.irq_timer` 增加 1 拍输出寄存器 | 6,342 (10.00%) | 3,951 | 8 (5.93%) | 8 | 67.6 MHz |
-| **四轮定型** | **精简 `fwd_wb_data` + 低 2 位 `insn_misalign` + 预计算 `irq_vector`** | **6,358 (10.03%)** | **3,951 (3.12%)** | **8 (5.93%)** | **8 (3.33%)** | **79.05 MHz**（满足 MIG 75 MHz +0.683 ns 裕量） |
+| 四轮基线 (`a957b1a`) | 精简 `fwd_wb_data` + 低 2 位 `insn_misalign` + 预计算 `irq_vector` | 6,358 (10.03%) | 3,951 (3.12%) | 8 (5.93%) | 8 (3.33%) | 79.05 MHz |
+| 第一轮单模块审计 | 统一 33×33 乘法器（DSP 减半）、ALU/分支共享比较器、16 项循环 RAS、NS16550A `thre_ip`、全 CDC `ASYNC_REG`、`ODDR` `CAM_XCLK` | 6,132 (9.67%) | 3,917 (3.09%) | 8 (5.93%) | **4 (1.67%)** | 77.72 MHz |
+| **第二轮全路径优化** | **BTB 元数据打包 `RAMB18E1` + 后台清零、EX 归并 `WB_PC4`、I-Cache 直出 `data_q` + `q_cacheable_r`、分支非对齐/非法 1 拍寄存陷阱、7-bit `id_sys_stall`、`hazard_unit` 末级门控、`mig_ddr2_bridge` 128-bit 读行缓冲** | **5,742 (9.06%)** | **3,427 (2.70%)** | **8 (5.93%)** | **4 (1.67%)** | **93.36 MHz**（相对 MIG 75 MHz **+2.622 ns** 正裕量） |
+
+完整两轮设计空间评估、缺陷修复与六大路径剖析详见 [docs/AUDIT_OPTIMIZATION.md](AUDIT_OPTIMIZATION.md)。
 
 ---
 
@@ -67,7 +71,7 @@
 - **Stage 2 硬件环（已完成）**：
   - 完整实现并集成 `async_fifo`、`spi_master`（microSD）、`vga_ctrl`（640×480@60Hz 12-bit）、`ov5640_sccb`（16-bit 寄存器地址）、`ov5640_capture`（真实异步 `cam_pclk` RGB565 采集）与 `mig_ddr2_bridge`（128-bit Native MIG 桥）；
   - 完成 Nexys 4 DDR 实板工程文件（`top_nexys4_ddr.v`、`nexys4_ddr.xdc`、`mig.prj`、`build_project.tcl`、`synth_ooc.tcl`）；
-  - ModelSim **24/24** 严格纯 Verilog 回归通过（含 `tb_periph_stage2` 全外设与 MIG 随机反压压测）、Vivado `xvlog` 全量 0 报错、Vivado 2018.3 `xc7a100t-1` 布局布线实测 **79.05 MHz**（覆盖 MIG 75 MHz 主频）。
+  - ModelSim **24/24** 严格纯 Verilog 回归通过（含 `tb_periph_stage2` 全外设、MIG 4× 读行缓冲与随机反压压测）、Vivado `xvlog` 全量 0 报错；完成**两轮全局审计与全路径优化**（[docs/AUDIT_OPTIMIZATION.md](AUDIT_OPTIMIZATION.md)），Vivado 2018.3 `xc7a100t-1` 布局布线实测 **93.36 MHz** / **5,742 LUT** / **3,427 FF** / **4 DSP48E1**（覆盖 MIG 75 MHz 留有 +2.622 ns 正裕量）。
 - **Stage 2 软件/实板环（下一步）**：
   - 在 Vivado 运行 `build_project.tcl` 生成比特流实板点亮 VGA 彩条 + UART 控制台 + microSD SPI 读卡 + DDR2 压测；
   - 编译并引导 **nommu Linux (`CONFIG_MMU=n`, `CONFIG_RISCV_M_MODE=y`)** + BusyBox shell，扩展 VGA 帧缓冲 DMA / OV5640→VGA 实时预览通路。

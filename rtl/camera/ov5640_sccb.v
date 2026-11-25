@@ -60,6 +60,8 @@ module ov5640_sccb #(
   reg [7:0]  wdata_r;
   reg [7:0]  sh_tx;
   reg [7:0]  sh_rx;
+  (* ASYNC_REG = "TRUE" *) reg siod_s1;
+  (* ASYNC_REG = "TRUE" *) reg siod_s2;
 
   wire tick = (div_cnt == 16'd0);
 
@@ -81,8 +83,12 @@ module ov5640_sccb #(
       wdata_r  <= 8'd0;
       sh_tx    <= 8'd0;
       sh_rx    <= 8'd0;
+      siod_s1  <= 1'b1;
+      siod_s2  <= 1'b1;
     end
     else begin
+      siod_s1 <= sio_d_in;
+      siod_s2 <= siod_s1;
       if (state == S_IDLE) begin
         sio_c    <= 1'b1;
         sio_d_oe <= 1'b0;
@@ -142,7 +148,7 @@ module ov5640_sccb #(
               2'd0: begin sio_c <= 1'b0; sio_d_oe <= 1'b0; q_step <= 2'd1; end
               2'd1: begin sio_c <= 1'b1; q_step <= 2'd2; end
               2'd2: begin
-                if (sio_d_in) nack_err <= 1'b1;
+                if (siod_s2) nack_err <= 1'b1;
                 q_step <= 2'd3;
               end
               2'd3: begin
@@ -182,7 +188,7 @@ module ov5640_sccb #(
               2'd0: begin sio_c <= 1'b0; sio_d_oe <= 1'b0; q_step <= 2'd1; end
               2'd1: begin sio_c <= 1'b1; q_step <= 2'd2; end
               2'd2: begin
-                sh_rx  <= {sh_rx[6:0], sio_d_in};
+                sh_rx  <= {sh_rx[6:0], siod_s2};
                 q_step <= 2'd3;
               end
               2'd3: begin

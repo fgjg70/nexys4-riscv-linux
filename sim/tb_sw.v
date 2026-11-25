@@ -23,6 +23,7 @@ module tb_sw;
   localparam BTB_PC_TOP   = 32;
   localparam BTB_TAG_LSB  = BTB_IDX_BITS + 2;
   localparam BTB_TAG_W    = BTB_PC_TOP - BTB_TAG_LSB;
+  localparam BTB_META_W   = BTB_TAG_W + 3;
   localparam BTB_N        = (1 << BTB_IDX_BITS);
 
   localparam [31:0] MMIO_MARK_A   = `MMIO_MARK;
@@ -243,10 +244,12 @@ module tb_sw;
     input [31:0] pc_in;
     reg [BTB_IDX_BITS-1:0] idx;
     reg [BTB_TAG_W-1:0]    tg;
+    reg [BTB_META_W-1:0]   m;
     begin
       idx = pc_in[BTB_IDX_BITS+1:2];
       tg  = pc_in[BTB_PC_TOP-1:BTB_TAG_LSB];
-      btb_has_entry = u_dut.u_cpu.u_btb.vld[idx] && (u_dut.u_cpu.u_btb.tag[idx] == tg);
+      m   = u_dut.u_cpu.u_btb.meta_ram[idx];
+      btb_has_entry = !u_dut.u_cpu.u_btb.scrubbing && m[BTB_META_W-1] && (m[BTB_TAG_W-1:0] == tg);
     end
   endfunction
 
@@ -254,7 +257,10 @@ module tb_sw;
     if (!rst) begin
       if (rep_hit_d !== u_dut.u_cpu.pred_hit)
         n_btb_rep_bad = n_btb_rep_bad + 32'd1;
-      rep_hit_d <= btb_has_entry(u_dut.u_cpu.pc_next);
+      if (u_dut.u_cpu.btb_flush_all || u_dut.u_cpu.u_btb.scrubbing)
+        rep_hit_d <= 1'b0;
+      else if (!u_dut.u_cpu.p2_hold)
+        rep_hit_d <= btb_has_entry(u_dut.u_cpu.p2_pc_ns);
     end
   end
 
@@ -460,7 +466,7 @@ module tb_sw;
              n_pred_is_ret, n_ras_diff);
     n_ret_entries = 32'd0;
     for (bi = 0; bi < BTB_N; bi = bi + 1)
-      if (u_dut.u_cpu.u_btb.vld[bi] && u_dut.u_cpu.u_btb.is_ret[bi])
+      if (u_dut.u_cpu.u_btb.meta_ram[bi][BTB_META_W-1] && u_dut.u_cpu.u_btb.meta_ram[bi][BTB_META_W-3])
         n_ret_entries = n_ret_entries + 32'd1;
     $display("  BTB 中 is_ret=1 的表项 = %0d", n_ret_entries);
 `endif

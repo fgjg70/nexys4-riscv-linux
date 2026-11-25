@@ -4,8 +4,10 @@
 // ============================================================================
 // muldiv.v — RV32M 乘除法单元（纯 Verilog-2001）
 // ----------------------------------------------------------------------------
-// - 乘法: 双 64 位寄存乘积 (推断 DSP48 MREG/PREG), MULHSU 经恒等式复用 prod_ss;
-// - 除法: 默认基-2 (32 步恢复余数法); 定义 DIV_RADIX4 切换基-4 (16 步)。
+// Round 1 审计优化:
+//   - 乘法: 合并原双 32×32 (8 DSP48E1) 为单组 33×33 有符号统一乘法器 (仅 4 DSP48E1，
+//     DSP 占用减半，且移除 MULHSU 尾部 32 位修正加法器，保持精确 2 拍吞吐)；
+//   - 除法: 默认基-2 (32 步恢复余数法); 定义 DIV_RADIX4 切换基-4 (16 步)。
 // ============================================================================
 
 module muldiv #(
@@ -22,15 +24,17 @@ module muldiv #(
   output wire            busy
 );
 
-  reg signed [63:0] prod_ss;
-  reg        [63:0] prod_uu;
+  // 统一 33×33 有符号乘法器覆盖 MUL / MULH / MULHSU / MULHU 四条指令 (4×DSP48E1)
+  wire mul_a_signed = (op == `ALU_MULH) || (op == `ALU_MULHSU);
+  wire mul_b_signed = (op == `ALU_MULH);
+  wire signed [32:0] mul_a_ext = {mul_a_signed ? a[31] : 1'b0, a};
+  wire signed [32:0] mul_b_ext = {mul_b_signed ? b[31] : 1'b0, b};
+
+  reg signed [65:0] prod;
 
   always @(posedge clk) begin
-    prod_ss <= $signed(a) * $signed(b);
-    prod_uu <= a * b;
+    prod <= mul_a_ext * mul_b_ext;
   end
-
-  wire [31:0] mulhsu_hi = prod_ss[63:32] + (b[31] ? a : 32'd0);
 
   wire is_mul_op    = (op == `ALU_MUL) || (op == `ALU_MULH) ||
                       (op == `ALU_MULHSU) || (op == `ALU_MULHU);
@@ -161,10 +165,10 @@ module muldiv #(
   always @(*) begin
     if (!is_div_op) begin
       case (op)
-        `ALU_MUL:    result = prod_ss[31:0];
-        `ALU_MULH:   result = prod_ss[63:32];
-        `ALU_MULHSU: result = mulhsu_hi;
-        `ALU_MULHU:  result = prod_uu[63:32];
+        `ALU_MUL:    result = prod[31:0];
+        `ALU_MULH,
+        `ALU_MULHSU,
+        `ALU_MULHU:  result = prod[63:32];
         default:     result = 32'd0;
       endcase
     end

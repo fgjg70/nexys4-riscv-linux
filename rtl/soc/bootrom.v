@@ -4,8 +4,9 @@
 // ============================================================================
 // bootrom.v — 16 KB 片上只读 BootROM (0x0000_1000 .. 0x0000_4FFF, 纯 Verilog-2001)
 // ----------------------------------------------------------------------------
+// Round 1 审计优化:
+//   - 将 ROM 同步读拆分到独立无异步复位 posedge clk 块，跨工具 100% 稳定推断为 BRAM。
 // 默认预置 2 条最小引导指令: lui t0, 0x80000 ; jr t0 (直接跳往 DDR2 0x8000_0000)。
-// 仿真可通过 +rom=<hex> 覆盖；综合可通过 ROM_INIT_FILE 装入正式 Bootloader + DTB。
 // ============================================================================
 
 module bootrom #(
@@ -34,6 +35,7 @@ module bootrom #(
 `endif
 
   initial begin
+    rdata = `INSTR_NOP;
     for (i = 0; i < WORDS; i = i + 1) begin
       mem[i] = `INSTR_NOP;
     end
@@ -53,17 +55,16 @@ module bootrom #(
 `endif
   end
 
+  // 独立无异步复位 ROM 读块: 跨 Vivado/Yosys/Quartus 稳定推断为 Block ROM
+  always @(posedge clk) begin
+    if (do_req) begin
+      rdata <= mem[rel_addr[AW+1:2]];
+    end
+  end
+
   always @(posedge clk or posedge rst) begin
-    if (rst) begin
-      ack   <= 1'b0;
-      rdata <= `INSTR_NOP;
-    end
-    else begin
-      ack <= do_req;
-      if (do_req) begin
-        rdata <= mem[rel_addr[AW+1:2]];
-      end
-    end
+    if (rst) ack <= 1'b0;
+    else     ack <= do_req;
   end
 
 endmodule

@@ -17,6 +17,7 @@ module hazard_unit (
 
   input  wire [4:0] if_id_rs1,
   input  wire [4:0] if_id_rs2,
+  input  wire       id_valid,
 
   input  wire       lsu_stall,
   input  wire       ex_busy,
@@ -32,14 +33,14 @@ module hazard_unit (
 );
 
   // load-use: 2 拍气泡 (C-2: load 数据不走前递, 靠 regfile 写优先旁路补最后一棒)
-  reg load_use_ex, load_use_mem, load_use;
-  always @(*) begin
-    load_use_ex  = id_ex_mem_read && (id_ex_rd != 5'd0) &&
-                   ((id_ex_rd == if_id_rs1) || (id_ex_rd == if_id_rs2));
-    load_use_mem = ex_mem_mem_read && ex_mem_reg_write && (ex_mem_rd != 5'd0) &&
-                   ((ex_mem_rd == if_id_rs1) || (ex_mem_rd == if_id_rs2));
-    load_use     = load_use_ex || load_use_mem;
-  end
+  // Round 2 时序优化: 5-bit 寄存器编号比对直接并行取自 if_instr，id_valid 仅在末级门控 load_use，
+  // 彻底剪断 icache.q_hit -> id_rs_haz -> 5-bit 比较器 -> fetch_hold 串行关键路径。
+  wire load_use_ex_raw  = id_ex_mem_read && (id_ex_rd != 5'd0) &&
+                          ((id_ex_rd == if_id_rs1) || (id_ex_rd == if_id_rs2));
+  wire load_use_mem_raw = ex_mem_mem_read && ex_mem_reg_write && (ex_mem_rd != 5'd0) &&
+                          ((ex_mem_rd == if_id_rs1) || (ex_mem_rd == if_id_rs2));
+  wire load_use_ex      = id_valid && load_use_ex_raw;
+  wire load_use         = id_valid && (load_use_ex_raw || load_use_mem_raw);
 
   // id_sys_stall: 在 ID 段暂停 SYSTEM/异常指令直到在途访存离开 EX/MEM，
   // 复用气泡注入路径，既保证 WB 访存异常精确性又避免任何前递陈旧问题。

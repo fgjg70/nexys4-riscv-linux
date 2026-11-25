@@ -3,8 +3,10 @@
 // ============================================================================
 // async_fifo.v — 纯 Verilog-2001 格雷码双时钟异步 FIFO (零厂商原语)
 // ----------------------------------------------------------------------------
-// 用于 OV5640 cam_pclk -> sys_clk/vga_clk 像素跨时钟域采集。
-// 默认 DEPTH = 1024 × 16-bit (独立无复位同步读写块 -> 100% 推断为 1 块 RAMB18E1)。
+// Round 1 审计加固:
+//   - 跨时钟域格雷码同步链显式标注 (* ASYNC_REG = "TRUE" *)，保证 Vivado 同 Slice 放置与高 MTBF；
+//   - 独立无异步复位同步读写块 -> 100% 推断为 1 块 Artix-7 RAMB18E1；
+//   - 引出 wr_ovf_pulse (wr_en && wr_full) 供摄像头采集层实时上报像素溢出。
 // ============================================================================
 
 module async_fifo #(
@@ -17,6 +19,7 @@ module async_fifo #(
   input  wire              wr_en,
   input  wire [DATA_W-1:0] wr_data,
   output wire              wr_full,
+  output wire              wr_ovf_pulse,
 
   // 读时钟域 (例如 sys_clk / vga_clk)
   input  wire              rd_clk,
@@ -30,18 +33,22 @@ module async_fifo #(
 
   (* ram_style = "block" *) reg [DATA_W-1:0] mem [0:DEPTH-1];
 
-  // 写指针 (二进制 + 格雷码)
+  // 写时钟域指针 + 同步读格雷码
   reg  [ADDR_W:0] wr_bin;
   reg  [ADDR_W:0] wr_gray;
-  reg  [ADDR_W:0] rd_gray_sync1, rd_gray_sync2;
+  (* ASYNC_REG = "TRUE" *) reg [ADDR_W:0] rd_gray_sync1;
+  (* ASYNC_REG = "TRUE" *) reg [ADDR_W:0] rd_gray_sync2;
 
-  // 读指针 (二进制 + 格雷码)
+  // 读时钟域指针 + 同步写格雷码
   reg  [ADDR_W:0] rd_bin;
   reg  [ADDR_W:0] rd_gray;
-  reg  [ADDR_W:0] wr_gray_sync1, wr_gray_sync2;
+  (* ASYNC_REG = "TRUE" *) reg [ADDR_W:0] wr_gray_sync1;
+  (* ASYNC_REG = "TRUE" *) reg [ADDR_W:0] wr_gray_sync2;
 
   wire do_wr = wr_en && !wr_full;
   wire do_rd = rd_en && !rd_empty;
+
+  assign wr_ovf_pulse = wr_en && wr_full;
 
   wire [ADDR_W:0] wr_bin_next  = wr_bin + {{ADDR_W{1'b0}}, do_wr};
   wire [ADDR_W:0] wr_gray_next = (wr_bin_next >> 1) ^ wr_bin_next;

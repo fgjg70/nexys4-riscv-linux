@@ -286,7 +286,7 @@ module rv32_cpu #(
   assign ex_is_call  = ex_is_call_w;
   assign ex_is_ret   = ex_is_ret_w;
 
-  ras #(.DEPTH(8)) u_ras (
+  ras #(.DEPTH(16)) u_ras (
     .clk       (clk),
     .rst       (rst),
     .flush_all (btb_flush_all),
@@ -322,9 +322,9 @@ module rv32_cpu #(
   assign id_rs2 = if_instr[24:20];
   assign id_rd  = if_instr[11:7];
 
-  // I-Cache 缺失或取指故障时将冒险检测源寄存器清零，防止无效指令码触发伪 load-use
-  assign id_rs1_haz = (id_en && !if_fault) ? id_rs1 : 5'd0;
-  assign id_rs2_haz = (id_en && !if_fault) ? id_rs2 : 5'd0;
+  // 原始源寄存器直连冒险比较器，由 id_valid 在末级门控 load_use，打破 q_hit -> 比较器串行链
+  assign id_rs1_haz = id_rs1;
+  assign id_rs2_haz = id_rs2;
 
   control_unit #(.XLEN(XLEN)) u_ctrl (
     .instr (if_instr),
@@ -391,14 +391,10 @@ module rv32_cpu #(
   );
 
   // ==========================================================================
-  // EX 段
+  // EX 段 (Round 2 全路径优化: WB_PC4 在 EX 段并入 ex_result，前递零 MUX 直通!)
   // ==========================================================================
-  wire [31:0] ex_mem_fwd_data = (ex_mem_ctrl[`CTRL_WB_SRC] == `WB_PC4) ? ex_mem_pc_plus4
-                                                                       : ex_mem_alu_out;
-
-  // hazard_unit 严格保证 load/AMO 结果不走 MEM/WB 前递 (依赖 2 拍气泡 + regfile 写优先旁路)，
-  // 因此 fwd_wb_data 仅需二选一，消除 mem_wb_ctrl[CTRL_MEM_READ] 与 amo_wb_value 关键路径扇出。
-  wire [31:0] fwd_wb_data = (mem_wb_wb_src == `WB_PC4) ? mem_wb_pc_plus4 : mem_wb_alu_out;
+  wire [31:0] ex_mem_fwd_data = ex_mem_alu_out;
+  wire [31:0] fwd_wb_data     = mem_wb_alu_out;
 
   always @(*) begin
     ex_rs1 = (id_ex_fwd_a == `FWD_EX_MEM) ? ex_mem_fwd_data :
@@ -483,10 +479,11 @@ module rv32_cpu #(
     .busy   (md_busy_raw)
   );
 
-  assign ex_result = is_muldiv                ? md_result_eff
-                   : is_csr                   ? csr_rdata
-                   : id_ex_ctrl[`CTRL_AMO_EN] ? ex_amo_addr
-                   :                            ex_alu_out;
+  assign ex_result = (id_ex_ctrl[`CTRL_WB_SRC] == `WB_PC4) ? id_ex_pc_plus4
+                   : is_muldiv                             ? md_result_eff
+                   : is_csr                                ? csr_rdata
+                   : id_ex_ctrl[`CTRL_AMO_EN]              ? ex_amo_addr
+                   :                                         ex_alu_out;
 
   branch_unit #(.XLEN(XLEN)) u_branch (
     .rs1         (ex_rs1),
@@ -511,13 +508,14 @@ module rv32_cpu #(
                         (id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR);
 
   // IALIGN=32: 若跳转生效且目标地址非 4 字节对齐，触发指令地址非对齐异常 (CAUSE=0)
-  // 仅用低 2 位直接判非对齐，不等待 32 位目标加法器进位链
-  wire [1:0] ex_jr_lo2 = ex_rs1[1:0] + id_ex_imm[1:0];
-  wire       ex_bj_mis = id_ex_pc[1] ^ id_ex_imm[1];
-  assign insn_misalign =
-      ((id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR) && ex_jr_lo2[1]) ||
-      ((id_ex_ctrl[`CTRL_PC_SEL] == `PC_J)  && ex_bj_mis)    ||
-      ((id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR) && ex_taken && ex_bj_mis);
+  // 仅用低 2 位直接判非对齐；条件分支非对齐经 1 拍寄存 br_misalign_r 进陷阱（与 br_redir_r 同构），
+  // 彻底剪断 branch_unit 32 位进位链 -> trap_enter -> pc_flush -> ibus_addr -> I-Cache 关键路径
+  wire [1:0] ex_jr_lo2          = ex_rs1[1:0] + id_ex_imm[1:0];
+  wire       ex_bj_mis          = id_ex_pc[1] ^ id_ex_imm[1];
+  wire       insn_misalign_fast = ((id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR) && ex_jr_lo2[1]) ||
+                                  ((id_ex_ctrl[`CTRL_PC_SEL] == `PC_J)  && ex_bj_mis);
+  wire       br_misalign_cond   = (id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR) && ex_taken && ex_bj_mis;
+  assign     insn_misalign      = insn_misalign_fast || br_misalign_cond;
 
   assign actual_target = actual_taken ? ex_pc_target : id_ex_pc_plus4;
 
@@ -570,47 +568,56 @@ module rv32_cpu #(
   wire amo_misalign = id_ex_ctrl[`CTRL_AMO_EN] && (ex_amo_addr[1:0] != 2'b00);
   wire ex_illegal   = id_ex_ctrl[`CTRL_ILLEGAL] || csr_illegal;
 
-  assign exc_req    = !hold_mem && !redir_kill && !any_bus_fault && (
-                        id_ex_if_fault ||
-                        ex_illegal ||
-                        (id_ex_ctrl[`CTRL_SYS_OP] == `SYS_ECALL) ||
-                        (id_ex_ctrl[`CTRL_SYS_OP] == `SYS_EBREAK) ||
-                        insn_misalign ||
-                        amo_misalign);
-
-  assign exc_cause  = id_ex_if_fault                             ? `CAUSE_INSN_ACCESS
-                    : ex_illegal                                 ? `CAUSE_ILLEGAL
-                    : (id_ex_ctrl[`CTRL_SYS_OP] == `SYS_ECALL)   ? `CAUSE_ECALL_M
-                    : (id_ex_ctrl[`CTRL_SYS_OP] == `SYS_EBREAK)  ? `CAUSE_BREAKPOINT
-                    : insn_misalign                              ? `CAUSE_INSN_MISALIGN
-                    : (id_ex_ctrl[`CTRL_AMO_OP] == `AMO_LR)      ? `CAUSE_LOAD_MISALIGN
-                    :                                              `CAUSE_STORE_MISALIGN;
+  reg        ex_pend_trap_r;
+  reg        ex_pend_is_ill_r;
+  reg [31:0] ex_pend_pc_r;
+  reg [31:0] ex_pend_tval_r;
 
   wire ex_mem_is_mem = ex_mem_valid &&
                        (ex_mem_ctrl[`CTRL_MEM_READ] || ex_mem_ctrl[`CTRL_MEM_WRITE] || ex_mem_ctrl[`CTRL_AMO_EN]);
   wire id_ex_is_mem  = id_ex_valid && !redir_kill &&
                        (id_ex_ctrl[`CTRL_MEM_READ] || id_ex_ctrl[`CTRL_MEM_WRITE] || id_ex_ctrl[`CTRL_AMO_EN]);
 
+  assign exc_req    = !hold_mem && !redir_kill && !any_bus_fault && (
+                        id_ex_if_fault ||
+                        (ex_illegal && !ex_mem_is_mem) ||
+                        (id_ex_ctrl[`CTRL_SYS_OP] == `SYS_ECALL) ||
+                        (id_ex_ctrl[`CTRL_SYS_OP] == `SYS_EBREAK) ||
+                        insn_misalign_fast ||
+                        amo_misalign);
+
+  assign exc_cause  = id_ex_if_fault                             ? `CAUSE_INSN_ACCESS
+                    : ex_illegal                                 ? `CAUSE_ILLEGAL
+                    : (id_ex_ctrl[`CTRL_SYS_OP] == `SYS_ECALL)   ? `CAUSE_ECALL_M
+                    : (id_ex_ctrl[`CTRL_SYS_OP] == `SYS_EBREAK)  ? `CAUSE_BREAKPOINT
+                    : insn_misalign_fast                         ? `CAUSE_INSN_MISALIGN
+                    : (id_ex_ctrl[`CTRL_AMO_OP] == `AMO_LR)      ? `CAUSE_LOAD_MISALIGN
+                    :                                              `CAUSE_STORE_MISALIGN;
+
   // 异步中断: 不在 WFI 上抢占 (确保唤醒后 mepc=PC+4)，不在更老访存未离开 MEM 时抢占
   assign irq_take   = irq_pending && !hold_mem && !exc_req && !any_bus_fault &&
                       !is_mret && !is_wfi && !is_fencei && !ex_mem_is_mem &&
+                      !((id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR) && ex_bj_mis) &&
                       id_ex_valid && !redir_kill;
 
-  assign trap_req   = wb_fault || mem_fault || exc_req || irq_take;
-  assign trap_cause = wb_fault  ? {1'b0, wb_fault_cause}
-                    : mem_fault ? {1'b0, mem_fault_cause}
-                    : exc_req   ? {1'b0, exc_cause}
-                    :             irq_cause;
-  wire [31:0] trap_pc_sel = wb_fault  ? mem_wb_pc
-                          : mem_fault ? ex_mem_pc
-                          :             id_ex_pc;
-  assign trap_tval  = wb_fault       ? mem_wb_alu_out
-                    : mem_fault      ? mem_fault_tval
-                    : id_ex_if_fault ? id_ex_pc
-                    : ex_illegal     ? id_ex_instr
-                    : insn_misalign  ? ex_pc_target
-                    : amo_misalign   ? ex_amo_addr
-                    :                  32'd0;
+  assign trap_req   = wb_fault || mem_fault || ex_pend_trap_r || exc_req || irq_take;
+  assign trap_cause = wb_fault       ? {1'b0, wb_fault_cause}
+                    : mem_fault      ? {1'b0, mem_fault_cause}
+                    : ex_pend_trap_r ? {1'b0, (ex_pend_is_ill_r ? `CAUSE_ILLEGAL : `CAUSE_INSN_MISALIGN)}
+                    : exc_req        ? {1'b0, exc_cause}
+                    :                  irq_cause;
+  wire [31:0] trap_pc_sel = wb_fault       ? mem_wb_pc
+                          : mem_fault      ? ex_mem_pc
+                          : ex_pend_trap_r ? ex_pend_pc_r
+                          :                  id_ex_pc;
+  assign trap_tval  = wb_fault           ? mem_wb_alu_out
+                    : mem_fault          ? mem_fault_tval
+                    : ex_pend_trap_r     ? ex_pend_tval_r
+                    : id_ex_if_fault     ? id_ex_pc
+                    : ex_illegal         ? id_ex_instr
+                    : insn_misalign_fast ? ex_pc_target
+                    : amo_misalign       ? ex_amo_addr
+                    :                      32'd0;
 
   csr_file #(.MTVEC_RESET(MTVEC_RESET)) u_csr (
     .clk         (clk),
@@ -643,37 +650,52 @@ module rv32_cpu #(
   );
 
   // ==========================================================================
-  // C-11 / C-15 寄存重定向
+  // C-11 / C-15 寄存重定向 + 1 拍寄存精确陷阱 (条件分支非对齐 / 访存后非法指令)
   // ==========================================================================
   assign br_redir     = redirect;
   assign br_redir_eff = br_redir && !trap_redir && !redir_kill && !any_bus_fault;
+  wire   ill_defer_cond  = ex_illegal && ex_mem_is_mem && !id_ex_if_fault;
+  wire   ex_pend_trap_eff = (br_misalign_cond || ill_defer_cond) &&
+                            !hold_mem && !trap_redir && !redir_kill && !any_bus_fault;
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
-      br_redir_r  <= 1'b0;
+      br_redir_r       <= 1'b0;
 `ifndef SYNTHESIS
-      br_redir_r2 <= 1'b0;
+      br_redir_r2      <= 1'b0;
 `endif
-      br_tgt_r    <= 32'd0;
+      br_tgt_r         <= 32'd0;
+      ex_pend_trap_r   <= 1'b0;
+      ex_pend_is_ill_r <= 1'b0;
+      ex_pend_pc_r     <= 32'd0;
+      ex_pend_tval_r   <= 32'd0;
     end
     else if (trap_redir) begin
-      br_redir_r  <= 1'b0;
+      br_redir_r       <= 1'b0;
 `ifndef SYNTHESIS
-      br_redir_r2 <= 1'b0;
+      br_redir_r2      <= 1'b0;
 `endif
-      br_tgt_r    <= 32'd0;
+      br_tgt_r         <= 32'd0;
+      ex_pend_trap_r   <= 1'b0;
+      ex_pend_is_ill_r <= 1'b0;
+      ex_pend_pc_r     <= 32'd0;
+      ex_pend_tval_r   <= 32'd0;
     end
     else begin
-      br_redir_r  <= br_redir_eff;
+      br_redir_r       <= br_redir_eff;
 `ifndef SYNTHESIS
-      br_redir_r2 <= br_redir_r;
+      br_redir_r2      <= br_redir_r;
 `endif
-      br_tgt_r    <= actual_target;
+      br_tgt_r         <= actual_target;
+      ex_pend_trap_r   <= ex_pend_trap_eff;
+      ex_pend_is_ill_r <= ill_defer_cond;
+      ex_pend_pc_r     <= id_ex_pc;
+      ex_pend_tval_r   <= ill_defer_cond ? id_ex_instr : ex_pc_target;
     end
   end
 
-  assign redir_kill  = br_redir_r;
-  assign redir_flush = br_redir_eff || br_redir_r;
+  assign redir_kill  = br_redir_r || ex_pend_trap_r;
+  assign redir_flush = br_redir_eff || br_redir_r || ex_pend_trap_eff || ex_pend_trap_r;
   assign trap_redir  = trap_enter || mret_taken || fencei_taken;
   assign any_redir   = redir_flush || trap_redir;
   assign id_ex_flush = trap_redir || br_redir_r;
@@ -689,8 +711,16 @@ module rv32_cpu #(
   // ==========================================================================
   // 冒险单元 & C-10/C-14 ID 预选寄存
   // ==========================================================================
-  wire id_is_sys_or_exc = id_en && (if_fault || id_ctrl[`CTRL_ILLEGAL] ||
-                                    (id_ctrl[`CTRL_SYS_OP] != `SYS_NONE));
+  // Round 2 全路径优化: id_sys_stall 仅判 7-bit opcode (1-2 LUT 替代 6 级 LUT6 CTRL_ILLEGAL 链)，
+  // 将 SYSTEM/FENCE/取指错/未知操作码在 ID 串行化；已知操作码的非法 funct 交由 EX 1 拍寄存陷阱兜底，
+  // 100% 保持精确异常优先级同时彻底剪断 I-Cache BRAM -> control_unit -> ibus_addr 关键路径。
+  wire id_opc_normal =
+      (if_instr[6:0] == `OPC_OP)     || (if_instr[6:0] == `OPC_OPIMM)  ||
+      (if_instr[6:0] == `OPC_LOAD)   || (if_instr[6:0] == `OPC_STORE)  ||
+      (if_instr[6:0] == `OPC_BRANCH) || (if_instr[6:0] == `OPC_LUI)    ||
+      (if_instr[6:0] == `OPC_AUIPC)  || (if_instr[6:0] == `OPC_JAL)    ||
+      (if_instr[6:0] == `OPC_JALR)   || (if_instr[6:0] == `OPC_AMO);
+  wire id_is_sys_or_exc = id_en && (if_fault || !id_opc_normal);
   wire id_sys_stall     = id_is_sys_or_exc && (id_ex_is_mem || ex_mem_is_mem);
   wire ex_busy_all      = md_busy || wfi_stall || fencei_stall;
 
@@ -703,6 +733,7 @@ module rv32_cpu #(
     .ex_mem_rd        (ex_mem_rd),
     .if_id_rs1        (id_rs1_haz),
     .if_id_rs2        (id_rs2_haz),
+    .id_valid         (id_en && !if_fault),
     .lsu_stall        (lsu_stall),
     .ex_busy          (ex_busy_all),
     .id_sys_stall     (id_sys_stall),
@@ -738,7 +769,7 @@ module rv32_cpu #(
     .rst           (rst),
     .stall         (hold_mem),
     .flush         (trap_enter || br_redir_r),
-    .valid_in      (id_ex_valid && !redir_kill),
+    .valid_in      (id_ex_valid && !redir_kill && !ex_pend_trap_eff),
     .pc_in         (id_ex_pc),
     .ctrl_in       (id_ex_ctrl),
     .alu_out_in    (ex_result),
@@ -861,15 +892,16 @@ module rv32_cpu #(
   );
 
   always @(*) begin
-    case (mem_wb_wb_src)
+    if (mem_wb_wb_src == `WB_MEM) begin
 `ifdef LOAD_RESULT_REG
-      `WB_MEM: wb_data = mem_wb_load_data;
+      wb_data = mem_wb_load_data;
 `else
-      `WB_MEM: wb_data = mem_load_data;
+      wb_data = mem_load_data;
 `endif
-      `WB_PC4: wb_data = mem_wb_pc_plus4;
-      default: wb_data = mem_wb_alu_out;
-    endcase
+    end
+    else begin
+      wb_data = mem_wb_alu_out;
+    end
   end
 
   assign wb_reg_write = mem_wb_ctrl[`CTRL_REG_WRITE] && (mem_wb_rd != 5'd0) && !hold_mem && !wb_fault;
@@ -907,7 +939,7 @@ module rv32_cpu #(
       $display("ERROR: C-14 predicted target not word-aligned: %h", id_ex_pred_target);
       $finish;
     end
-    if (!rst && trap_enter && !any_bus_fault && !id_ex_valid) begin
+    if (!rst && trap_enter && !any_bus_fault && !ex_pend_trap_r && !id_ex_valid) begin
       $display("ERROR: trap_enter on invalid EX instruction (R-01): pc=0x%08x cause=0x%02x",
                id_ex_pc, trap_cause);
       $finish;

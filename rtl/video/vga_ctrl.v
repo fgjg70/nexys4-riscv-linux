@@ -61,9 +61,11 @@ module vga_ctrl (
   reg [15:0] frame_cnt;
   reg [31:0] fb_base;
 
-  // VSYNC 跨时钟域同步 (vga_clk -> sys_clk)
-  reg        vs_tgl_vga;
-  reg        vs_s1, vs_s2, vs_s3;
+  // VSYNC 跨时钟域同步 (vga_clk -> sys_clk, 显式 ASYNC_REG 防亚稳态)
+  reg                          vs_tgl_vga;
+  (* ASYNC_REG = "TRUE" *) reg vs_s1;
+  (* ASYNC_REG = "TRUE" *) reg vs_s2;
+  reg                          vs_s3;
   wire       vs_pulse_sys = vs_s2 ^ vs_s3;
 
   wire [3:0] off    = addr[3:0];
@@ -115,6 +117,7 @@ module vga_ctrl (
             4'h0:    rdata <= {29'd0, reg_irq_en, reg_mode, reg_en};
             4'h4:    rdata <= {frame_cnt, 15'd0, vsync_irq};
             4'h8:    rdata <= fb_base;
+            4'hC:    rdata <= {16'd640, 16'd480}; // 只读分辨率标识 (驱动自探测)
             default: rdata <= 32'd0;
           endcase
         end
@@ -123,8 +126,10 @@ module vga_ctrl (
   end
 
   // ---- vga_clk (25 MHz) 扫描发生器与像素输出 ----
-  reg        en_s1, en_s2;
-  reg        mode_s1, mode_s2;
+  (* ASYNC_REG = "TRUE" *) reg en_s1;
+  (* ASYNC_REG = "TRUE" *) reg en_s2;
+  (* ASYNC_REG = "TRUE" *) reg mode_s1;
+  (* ASYNC_REG = "TRUE" *) reg mode_s2;
   reg [9:0]  h_cnt;
   reg [9:0]  v_cnt;
 

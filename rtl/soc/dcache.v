@@ -356,6 +356,11 @@ module dcache #(
                 valid_arr[q_idx] <= 1'b1;
                 dirty_arr[q_idx] <= q_we;
               end
+              else begin
+                // 填充失败时显式失效该槽，防止被中途覆写 data_ram 的旧清洁行伪命中
+                valid_arr[q_idx] <= 1'b0;
+                dirty_arr[q_idx] <= 1'b0;
+              end
               resp_err <= mem_err || rf_err;
               state    <= S_RESP;
             end

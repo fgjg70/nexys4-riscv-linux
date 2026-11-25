@@ -46,6 +46,8 @@ module spi_master #(
   reg [7:0]  tx_sh;
   reg [7:0]  rx_sh;
   reg [7:0]  rx_data;
+  (* ASYNC_REG = "TRUE" *) reg sd_cd_s1;
+  (* ASYNC_REG = "TRUE" *) reg sd_cd_s2;
 
   wire [3:0] off    = addr[3:0];
   wire       do_req = req && !ack;
@@ -66,13 +68,17 @@ module spi_master #(
       tx_sh    <= 8'hFF;
       rx_sh    <= 8'hFF;
       rx_data  <= 8'hFF;
+      sd_cd_s1 <= 1'b1;
+      sd_cd_s2 <= 1'b1;
       spi_sck  <= 1'b0;
       spi_mosi <= 1'b1;
       spi_cs_n <= 1'b1;
       sd_reset <= 1'b0;   // Nexys 4 DDR SD_RESET 低有效使能卡槽供电
     end
     else begin
-      ack <= do_req;
+      ack      <= do_req;
+      sd_cd_s1 <= sd_cd_n;
+      sd_cd_s2 <= sd_cd_s1;
 
       if (do_req) begin
         if (we) begin
@@ -106,7 +112,7 @@ module spi_master #(
         else begin
           case (off)
             4'h0:    rdata <= {24'd0, rx_data};
-            4'h4:    rdata <= {29'd0, irq_pend, sd_cd_n, busy};
+            4'h4:    rdata <= {29'd0, irq_pend, sd_cd_s2, busy};
             4'h8:    rdata <= {29'd0, irq_en, sd_reset, spi_cs_n};
             4'hC:    rdata <= {16'd0, div_reg};
             default: rdata <= 32'd0;

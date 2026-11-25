@@ -65,6 +65,7 @@ module icache #(
   reg         req_valid_q;
   reg  [31:0] req_pc_q;
   reg         vld_q;
+  reg         q_cacheable_r;
   reg  [19:0] tag_q;
   reg  [31:0] data_q;
 
@@ -82,8 +83,8 @@ module icache #(
     end
   endfunction
 
-  wire q_cacheable = is_cacheable(req_pc_q);
-  wire q_hit       = req_valid_q && q_cacheable && vld_q && (tag_q == req_pc_q[31:12]);
+  wire q_cacheable = q_cacheable_r;
+  wire q_hit       = req_valid_q && q_cacheable_r && vld_q && (tag_q == req_pc_q[31:12]);
 
   wire [6:0] in_idx  = ibus_addr[11:5];
   wire [9:0] in_word = ibus_addr[11:2];
@@ -126,9 +127,10 @@ module icache #(
 
     case (state)
       S_RUN: begin
+        // 直出 BRAM data_q，让 CPU 译码与 Tag 命中比对完全并行 (ibus_valid 负责有效门控)
+        ibus_rdata = data_q;
         if (q_hit && !flush_all) begin
           ibus_valid = 1'b1;
-          ibus_rdata = data_q;
           ibus_fault = 1'b0;
         end
       end
@@ -174,6 +176,7 @@ module icache #(
       req_valid_q   <= 1'b0;
       req_pc_q      <= 32'd0;
       vld_q         <= 1'b0;
+      q_cacheable_r <= 1'b0;
       miss_pc       <= 32'd0;
       word_cnt      <= 3'd0;
       miss_word_r   <= `INSTR_NOP;
@@ -188,14 +191,16 @@ module icache #(
       case (state)
         S_RUN: begin
           if (flush_all) begin
-            req_valid_q <= ibus_req;
-            req_pc_q    <= ibus_addr;
-            vld_q       <= 1'b0;
+            req_valid_q   <= ibus_req;
+            req_pc_q      <= ibus_addr;
+            vld_q         <= 1'b0;
+            q_cacheable_r <= is_cacheable(ibus_addr);
           end
           else if (!req_valid_q || q_hit || ibus_kill) begin
-            req_valid_q <= ibus_req;
-            req_pc_q    <= ibus_addr;
-            vld_q       <= valid_arr[in_idx];
+            req_valid_q   <= ibus_req;
+            req_pc_q      <= ibus_addr;
+            vld_q         <= valid_arr[in_idx];
+            q_cacheable_r <= is_cacheable(ibus_addr);
           end
           else begin
             miss_pc       <= req_pc_q;
@@ -217,6 +222,10 @@ module icache #(
             if (word_cnt == 3'd7) begin
               if (!(mem_err || refill_err) && !flush_all) begin
                 valid_arr[ms_idx] <= 1'b1;
+              end
+              else begin
+                // 填充失败/冲刷时显式失效该槽，杜绝已覆写 data_ram 的旧清洁行发生伪命中
+                valid_arr[ms_idx] <= 1'b0;
               end
               if (refill_killed || ibus_kill || flush_all) begin
                 state <= S_RELOOKUP;
@@ -245,27 +254,28 @@ module icache #(
         end
 
         S_RESP_OK: begin
-          state       <= S_RUN;
-          req_valid_q <= ibus_req;
-          req_pc_q    <= ibus_addr;
-          vld_q       <= flush_all ? 1'b0 : valid_arr[in_idx];
+          state         <= S_RUN;
+          req_valid_q   <= ibus_req;
+          req_pc_q      <= ibus_addr;
+          vld_q         <= flush_all ? 1'b0 : valid_arr[in_idx];
+          q_cacheable_r <= is_cacheable(ibus_addr);
         end
 
         S_RESP_ERR: begin
-          // 用 3-bit 偏移比对替代 32-bit 比较器，大幅削减关键路径延迟
-          if (ibus_kill || flush_all || (ibus_addr[4:2] != miss_pc[4:2])) begin
-            state       <= S_RUN;
-            req_valid_q <= ibus_req;
-            req_pc_q    <= ibus_addr;
-            vld_q       <= flush_all ? 1'b0 : valid_arr[in_idx];
-          end
+          // 与 S_RESP_OK 同构无条件返回 S_RUN，彻底消除 ibus_addr -> req_pc_q CE 路径
+          state         <= S_RUN;
+          req_valid_q   <= ibus_req;
+          req_pc_q      <= ibus_addr;
+          vld_q         <= flush_all ? 1'b0 : valid_arr[in_idx];
+          q_cacheable_r <= is_cacheable(ibus_addr);
         end
 
         S_RELOOKUP: begin
-          state       <= S_RUN;
-          req_valid_q <= ibus_req;
-          req_pc_q    <= ibus_addr;
-          vld_q       <= flush_all ? 1'b0 : valid_arr[in_idx];
+          state         <= S_RUN;
+          req_valid_q   <= ibus_req;
+          req_pc_q      <= ibus_addr;
+          vld_q         <= flush_all ? 1'b0 : valid_arr[in_idx];
+          q_cacheable_r <= is_cacheable(ibus_addr);
         end
 
         default: state <= S_RUN;

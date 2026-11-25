@@ -29,8 +29,9 @@ module alu #(
   wire [XLEN-1:0] sll_out  = a << b[SHAMT_W-1:0];
   wire [XLEN-1:0] srl_out  = a >> b[SHAMT_W-1:0];
   wire [XLEN-1:0] sra_out  = $signed(a) >>> b[SHAMT_W-1:0];
-  wire            slt      = $signed(a) < $signed(b);
-  wire            sltu     = a < b;
+  // 复用单组 32-bit 无符号比较器 + 符号位异或修正，省去重复 CARRY4 并降低操作数扇出
+  wire            sltu     = (a < b);
+  wire            slt      = (a[XLEN-1] ^ b[XLEN-1]) ? a[XLEN-1] : sltu;
 
   // RV32A 原子新值：a = 内存旧值，b = rs2
   wire [XLEN-1:0] amo_swap = b;

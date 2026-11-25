@@ -1,0 +1,103 @@
+# 两轮全局审计与系统优化报告（纯 Verilog-2001/2005）
+
+> **目标平台**：Digilent Nexys 4 DDR（Artix-7 `xc7a100tcsg324-1`，MIG 7 Series DDR2 `ui_clk = 75.0 MHz`）
+> **基线提交**：`a957b1a`（Stage 2 完整外设基线：`6,358 LUT` / `3,951 FF` / `8 BRAM36` / `8 DSP48E1` / `79.05 MHz`）
+> **验证标准**：ModelSim SE-64 **24/24** 严格纯 Verilog（禁 `-sv`）回归 + Vivado `xvlog` **42/42** 零报错（禁 `--sv`）+ Vivado 2018.3 `xc7a100tcsg324-1` OOC 真实布局布线签核。
+
+---
+
+## 总览：基线 → 第一轮 → 第二轮实测演进
+
+| 指标（Vivado 2018.3 Post-Route `rv32_soc`） | 基线 (`a957b1a`) | 第一轮（自下而上单模块） | 第二轮（全路径跨模块） | 累计净收益 |
+|---|---:|---:|---:|---|
+| **Slice LUTs**（可用 63,400） | 6,358 (10.03%) | 6,132 (9.67%) | **5,742 (9.06%)** | **-616 LUT (-9.7%)** |
+| **Slice Registers / FF**（可用 126,800） | 3,951 (3.12%) | 3,917 (3.09%) | **3,427 (2.70%)** | **-524 FF (-13.3%)，0 Latch** |
+| **F7 / F8 Muxes** | 208 / 42 | 208 / 42 | **128 / 8** | **-80 F7 / -34 F8** |
+| **Distributed RAM (LUTRAM)** | 232 | 232 | **216** | **-16 LUTRAM** |
+| **Block RAM Tile**（可用 135） | 8 (5.93%) | 8 (5.93%) | **8 (5.93%)** | **+0 BRAM**（6×36K + 4×18K） |
+| **DSP48E1**（可用 240） | 8 (3.33%) | **4 (1.67%)** | **4 (1.67%)** | **-4 DSP (-50.0%)** |
+| **`sys_clk` WNS @ 100 MHz** | -2.650 ns | -2.867 ns | **-0.711 ns** | **+1.939 ns** |
+| **`sys_clk` TNS @ 100 MHz** | — | -1,414.9 ns (1,905 ep) | **-18.09 ns (87 ep)** | **-98.7% TNS** |
+| **布线后最高主频 `fmax`** | 79.05 MHz | 77.72 MHz | **93.36 MHz** | **+14.31 MHz (+18.1%)** |
+| **相对 MIG 75 MHz 裕量** | +0.683 ns | +0.466 ns | **+2.622 ns** | **3.8× 时序裕量** |
+| **DDR2 32B Cache 填充突发数** | 8 次 MIG 读 | 8 次 MIG 读 | **2 次 MIG 读** | **~3.5–4× 实板填充提速** |
+
+> 异步域裕量：`cam_pclk`（48 MHz）`+14.595 ns`，`vga_clk`（25 MHz）`+36.010 ns`，保持时间 `WHS = +0.078 ns`（`THS = 0`），`0` 组合环、`0` 锁存器、`0` Critical Warnings。
+
+---
+
+## 第一轮：自下而上逐模块方案评估与优化
+
+逐一审视全部 RTL 模块，对每个核心功能枚举可行硬件实现方案并权衡面积/主频/Linux 规范符合性/跨时钟域安全：
+
+| 模块 | 候选实现方案对比 | 选型与落地改动 |
+|---|---|---|
+| `rtl/common/async_fifo.v` | A) 无属性普通 FF 同步器；B) 显式 `(* ASYNC_REG = "TRUE" *)` + 溢出脉冲观测；C) Xilinx 原语 `FIFO18E1`（丧失跨工具可移植性） | **选 B**：标注 `rd_gray_sync1/2` 与 `wr_gray_sync1/2` 的 `ASYNC_REG` 供 Vivado 紧邻布局降 MTBF，引出 `wr_ovf_pulse = wr_en && wr_full` 供摄像头诊断丢帧，同时保持 100% 跨工具纯 Verilog 与 BRAM 推断 |
+| `rtl/cpu/alu.v` & `rtl/cpu/branch_unit.v` | A) 独立有符号/无符号两套 32-bit 比较器（双 CARRY4 链）；B) 共享单套 32-bit 无符号比较器 + MSB 符号异或修正（`slt = (a[31]^b[31]) ? a[31] : sltu`） | **选 B**：比较器进位链面积直接减半，功能经 `tb_units` 全边界（`INT_MIN`/`INT_MAX`/`-1`/`0`）验证零差异 |
+| `rtl/cpu/ras.v` | A) 8 项非循环栈（溢出丢弃，且 `push && pop` 同拍丢失返回地址）；B) 16 项循环栈（环绕 `tos` + 饱和计数）且 `push && pop` 原地替换栈顶 | **选 B**：升级 `DEPTH=16`（覆盖 Linux 内核调用深度），修复 RISC-V Table 2.1 `jalr rd, rs1` 同时 call/ret 协程切换语义缺陷 |
+| `rtl/cpu/muldiv.v` | A) 双 32×32 乘法器（`prod_ss` + `prod_uu` = 8×DSP48E1 + 额外 `mulhsu` 加法器）；B) 单一统一有符号 33×33 乘法器（4×DSP48E1，通过符号扩展位统一覆盖 `MUL/MULH/MULHSU/MULHU`）；C) 迭代移位乘法（省 DSP 但 32 拍延迟） | **选 B**：保持精确 2 拍乘法延迟，**DSP48E1 由 8 减半至 4（-50%）**，零附加加法器，完整通过 `tb_core_m_ext` 与 `tb_linux_soc` 双模式验证 |
+| `rtl/soc/icache.v` & `rtl/soc/dcache.v` | A) 缺失填充出错时仅跳过 `valid_arr[idx]<=1`（若被驱逐旧行原本 `valid=1` 且 `data_ram` 已被部分覆写，将发生**静默伪命中损坏数据**）；B) 填充结束遇 `mem_err || rf_err` 显式清零 `valid_arr[idx]`（及 `dcache` 的 `dirty_arr[idx]`） | **选 B**：根除总线错误触发的缓存静默数据污染缺陷 |
+| `rtl/soc/bootrom.v` | A) `rdata` 含 `or posedge rst`（部分综合器退化为 LUT）；B) `rdata` 置于独立无复位 `always @(posedge clk)` 块 | **选 B**：确保 Vivado / 第三方综合器稳定推断 Block ROM |
+| `rtl/periph/uart_16550.v` | A) `tx_irq_req = ier[1] && tx_empty`（Linux `serial8250` 读 `IIR=0xC2` 后中断仍不撤销，触发 **THRE 死循环风暴**）；B) 实现标准 NS16550A `thre_ip` 锁存（TX 变空或 `IER[1]` `0->1` 置位，写 `THR` 或读 `IIR=0xC2` 清除）+ `LSR[1]` Overrun Error + `ASYNC_REG` RX 同步 + 21-bit 波特率计数器 | **选 B**：彻底对齐 Linux 8250 驱动中断模型，同时在 `sw/soc_test/main.c` 新增 `IIR 0xC2 -> 0xC1` 与 `IER[1]` 重触发自检 |
+| `rtl/periph/spi_master.v` | A) 直采异步机械卡槽开关 `sd_cd_n`；B) 2 级 `ASYNC_REG` 同步链（`sd_cd_s1/s2`） | **选 B**：消除外部低速插拔引脚亚稳态风险 |
+| `rtl/video/vga_ctrl.v` | A) 普通 FF 同步 `vs_tgl`/`reg_en`/`reg_mode`；B) 全量标注 `ASYNC_REG` + 新增 `+0x0C` 只读分辨率标识 `{16'd640, 16'd480}` | **选 B**：加固 `vga_clk <-> sys_clk` CDC 并提供驱动自探测寄存器 |
+| `rtl/camera/ov5640_sccb.v` & `ov5640_capture.v` | A) 固定高有效 VSYNC + 固定 RGB565 字节序 + 无溢出诊断；B) 全部外部输入与 CDC 链标注 `ASYNC_REG`，新增 `CTRL[6]=VSYNC_INV`、`CTRL[7]=BYTE_SWAP`、`CTRL[8]=FIFO_CLR`（自清软复位）及 `STAT[5]=FIFO_OVF`（W1C 溢出标志） | **选 B**：兼容市面上全部 OV5640 模组配置，实板调图免改 RTL |
+| `fpga/nexys4_ddr/top_nexys4_ddr.v` | A) 24 MHz `CAM_XCLK` 直接连通用 IO 布线（抖动大）；B) 综合时经 Xilinx `ODDR` 时钟转发输出 + 全复位同步链加 `ASYNC_REG` | **选 B**：符合 Artix-7 专用时钟输出规范，降低 OV5640 像素时钟抖动 |
+
+---
+
+## 第二轮：六大端到端系统全路径综合优化
+
+基于第一轮布线后完整时序报告（`vivado_r1_out/timing_impl.rpt`），跨越模块边界审查全部 6 条系统主路径并逐项打破瓶颈：
+
+### 路径 1：CPU 关键时序路径（IF → I-Cache → ID → Hazard → EX → Trap → PC/BTB）
+
+逐层剥离实测 Top-1/2/3 关键路径，实施 6 项协同跨模块改造，将 `sys_clk` 从 **77.72 MHz 推升至 93.36 MHz**（`TNS` 暴降 **98.7%**）：
+
+1. **BTB 元数据整体打包进单块 `RAMB18E1`（`rtl/cpu/btb.v`）**：
+   - 将 `{vld, is_cond, is_ret, tag[20:0]}`（24-bit）打包进同一块 `512×36` `RAMB18E1`（`meta_ram`），彻底消除原 512-bit `vld` FF 向量及 6 级 512:1 MUX 树（此前占据 Top-1 关键路径尾端 2.3 ns）。
+   - 配套 **零停顿后台清零状态机（512-cycle background scrubber）**：冷/热复位或 `FENCE.I`（`flush_all`）首拍立即拉低 `q_vld_gate` 杜绝任何陈旧预测，后台无停顿擦除 `meta_ram` 有效位，净省 ~500 FF、~170 LUT、0 额外 BRAM Tile。
+2. **EX 段归并 `WB_PC4` 前递直通（`rtl/cpu/rv32_cpu.v`）**：
+   - 在 EX 段直接将 `JAL`/`JALR` 返回地址 `id_ex_pc_plus4` 并入 `ex_result`，使 `ex_mem_fwd_data = ex_mem_alu_out` 与 `fwd_wb_data = mem_wb_alu_out` 均为零 MUX 直通，移除原 Top-1/Top-3 路径起点 `u_ex_mem/ctrl_reg[20]` 的 2 级前递选择延迟并裁去 64 个冗余 `pc_plus4` 寄存器。
+3. **I-Cache `S_RESP_ERR` 无条件回 `S_RUN` + `S_RUN` 直出 `data_q` + 预锁存 `q_cacheable_r`（`rtl/soc/icache.v`）**：
+   - 消除 `ibus_addr -> req_pc_q/vld_q CE` 比较器；
+   - `S_RUN` 无条件直出 `ibus_rdata = data_q`（由 `ibus_valid` 统一门控），打破 `q_hit` 串联在 `control_unit` 前方的 3.5 ns 假依赖，使指令译码与 Tag 命中比对完全并行；
+   - `q_cacheable_r` 随 `req_pc_q` 预锁存，缩短 `q_hit` 关键路径。
+4. **条件分支非对齐与访存后非法指令 1 拍精确寄存陷阱（`rtl/cpu/rv32_cpu.v`）**：
+   - 将依赖 32 位 `branch_unit` 进位链的 `PC_BR && ex_taken && ex_bj_mis` 异常与 `ex_illegal && ex_mem_is_mem` 统一经与 `br_redir_r` 同构的 1 拍寄存陷阱 `ex_pend_trap_r` 进入 `trap_req`（优先级严格低于更老访存的 `wb_fault`/`mem_fault`），彻底剪断 `fwd -> branch_unit (4×CARRY4) -> trap_enter -> pc_flush -> ibus_addr` 跨模块路径，正常指令流零额外周期开销。
+5. **`id_sys_stall` 替换为 7-bit 快速操作码判别（`rtl/cpu/rv32_cpu.v`）**：
+   - 原 `id_ctrl[ILLEGAL]` 综合出 6 级串联 `LUT6` 经 `id_sys_stall -> fetch_hold -> ibus_addr` 回环入 I-Cache；改用仅判 `if_instr[6:0]` 的 1–2 级 `id_opc_normal` 快速路径串行化 `SYSTEM`/`FENCE`/`if_fault`/未知操作码，已知操作码非法 `funct` 交由上述 `ex_pend_trap_r` 兜底，100% 保持精确异常语义。
+6. **`hazard_unit` 末级门控 `load_use`（`rtl/cpu/hazard_unit.v` & `rv32_cpu.v`）**：
+   - 将 5-bit 寄存器编号比较器直接接原始 `if_instr` 字段并行计算，`id_valid`（`id_en && !if_fault`）仅在末级门控 `load_use` 与 `load_use_ex`，剪断 `icache.q_hit -> id_rs_haz -> 5-bit 比较器 -> fetch_hold` 链条（实测 WNS 由 `-1.600 ns` 跃升至 `-0.711 ns`）。
+
+### 路径 2：统一主存与 DDR2 带宽路径（I/D-Cache → `soc_bus` → `mig_ddr2_bridge` → MIG 128-bit）
+
+- **问题诊断**：原 `mig_ddr2_bridge` 每次 32-bit 读请求都发起一次完整的 128-bit（4 字）MIG 突发并丢弃其余 3 字，导致每次 8 字（32 B）Cache 行填充产生 **8 次 DDR2 读突发**，75% 有效 DDR2 带宽白白浪费。
+- **优化方案（`rtl/soc/mig_ddr2_bridge.v`）**：
+  - 增加 **128-bit（16 B = 4 字）读行缓冲**（`rd_buf_valid`, `rd_buf_line`, `rd_buf_data`）：同 16 B 行内连续 4 个 32-bit 字仅发起 **1 次** MIG 突发，后 3 字缓冲直出，将 32 B I/D-Cache 填充突发由 8 次压降至 **2 次（~3.5–4× 实板填充提速）**；
+  - 写通道保持 Write-Through 直写（天然 DMA 一致性安全），写命中当前读行缓冲时自动失效 `rd_buf_valid`，杜绝写后读陈旧；
+  - 已在 `sim/tb_periph_stage2.v` 中用 MIG 命令计数器精确断言：16 字连续读严格只发出 **4 次** `CMD_READ`（`mig_rd_buf_4x_burst`），且写命中缓冲行后立即读回验证最新数据与精准 1 次重取（`mig_rd_buf_snoop_inval`）。
+
+### 路径 3：中断与精确陷阱路径（CLINT/PLIC/UART/SPI/VGA/OV5640 → `csr_file` → `pc`）
+
+- 全链路确认：`clint.irq_timer`、`plic.irq_ext` 均经 1 拍输出寄存，`csr_file` 预计算 `irq_vector`；`uart_16550` 补齐 `thre_ip` 杜绝中断风暴；精确异常优先级严格固定为 `wb_fault > mem_fault > ex_pend_trap_r > exc_req > irq_take`。
+
+### 路径 4：摄像头与视频跨时钟域路径（`cam_pclk` → `async_fifo` → `sys_clk` ↔ `vga_clk`）
+
+- 三时钟域（`sys_clk` / `cam_pclk` / `vga_clk`）全部跨界控制/状态位标注 `(* ASYNC_REG = "TRUE" *)`，像素数据经格雷码双时钟 BRAM `async_fifo`（1024×16b）传输并带 `FIFO_CLR` 帧对齐与 `FIFO_OVF` 溢出告警；XDC 严格配置 `set_clock_groups -asynchronous`，布线后两异步域分别具备 `+14.6 ns` / `+36.0 ns` 充裕裕量。
+
+### 路径 5：冷启动与存储引导路径（`bootrom` → `spi_master` → DDR2）
+
+- `bootrom` 支持跨工具 Block ROM 推断且严格只读（写触发精确 `mcause=7`）；`spi_master` 卡检测同步加固，具备随时挂载 SD Bootloader 从 microSD 搬运 nommu Linux 内核至 `0x8000_0000` DDR2 的硬件完备性。
+
+### 路径 6：全局时钟与复位树（`top_nexys4_ddr.v`）
+
+- 100 MHz 板载晶振经 `clk_wiz_0` 生成 200 MHz（MIG 参考/输入）、25 MHz（VGA）、24 MHz（`ODDR` 转发 `CAM_XCLK`）；MIG 输出 75 MHz `ui_clk` 驱动完整 `rv32_soc`；各时钟域均采用异步置位、同步释放（`ASYNC_REG` 2-FF）复位同步链，杜绝复位释放亚稳态。
+
+---
+
+## 回归与签核清单
+
+- [x] **纯 Verilog 零违规**：全仓库 0 个 `.sv` 文件；Vivado `xvlog`（禁 `--sv`）42/42 零报错。
+- [x] **ModelSim 24/24 全通过**：`default(radix-2)` 12/12 + `DIV_RADIX4` 12/12，新增覆盖 NS16550A THRE `IIR` 读清与重触发、VGA `+0x0C` 分辨率 ID、OV5640 `BYTE_SWAP`/`VSYNC_INV`/`FIFO_CLR`、`mig_ddr2_bridge` 4× 读行缓冲计数与写命中失效、BRAM 打包 BTB 逐拍自证。
+- [x] **Vivado 2018.3 `xc7a100tcsg324-1` OOC 布局布线签核**：`5,742 LUT (9.06%)` / `3,427 FF (2.70%, 0 Latch)` / `8 BRAM36 (5.93%)` / `4 DSP48E1 (1.67%)` / **`sys_clk = 93.36 MHz`**（相对 75 MHz MIG `ui_clk` 具备 **`+2.622 ns`** 正裕量）。
