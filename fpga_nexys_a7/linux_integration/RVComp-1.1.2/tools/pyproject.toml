@@ -1,0 +1,36 @@
+[project]
+name = "rvcomp-tools"
+version = "2.0.1"
+description = "RVComp development tools"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pytest>=9.0.0",
+    "pytest-xdist>=3.8.0",
+    "pyserial>=3.5",
+    "readchar>=4.2.1",
+    "readkeys>=1.0.2",
+    "tqdm>=4.67.1",
+]
+
+[project.scripts]
+term = "term:main"
+findport = "find_serial_ports:main"
+setting = "setting:main"
+cliconfig = "setting:cli_main"
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.uv]
+exclude-newer = "1 week"
+
+[tool.pytest.ini_options]
+addopts = "--tb=short"
