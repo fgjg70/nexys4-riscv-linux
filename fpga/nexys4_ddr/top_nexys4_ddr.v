@@ -236,10 +236,12 @@ module top_nexys4_ddr (
   assign SD_DAT[2] = 1'b1;      // SPI 模式闲置拉高
   assign SD_DAT[3] = spi_cs_n;  // SPI CS_N
 
-  // ---- OV5640 SCCB 开漏三态 ----
+  // ---- OV5640 SCCB 双开漏三态 (对齐 AF-OV5640-U1.0, SCL/SDA 均由 XDC PULLUP 拉高) ----
+  wire cam_sio_c_raw;
   wire cam_sio_d_oe;
   wire cam_sio_d_in = CAM_SIOD;
-  assign CAM_SIOD   = cam_sio_d_oe ? 1'b0 : 1'bz;
+  assign CAM_SIOC   = cam_sio_c_raw ? 1'bz : 1'b0;
+  assign CAM_SIOD   = cam_sio_d_oe  ? 1'b0 : 1'bz;
 
   // ---- RV32IMA Linux-Ready SoC 核心 ----
   wire [31:0] dbg_pc;
@@ -288,7 +290,7 @@ module top_nexys4_ddr (
     .cam_d             (CAM_D),
     .cam_pwdn          (CAM_PWDN),
     .cam_rst_n         (CAM_RST_N),
-    .cam_sio_c         (CAM_SIOC),
+    .cam_sio_c         (cam_sio_c_raw),
     .cam_sio_d_oe      (cam_sio_d_oe),
     .cam_sio_d_in      (cam_sio_d_in),
     .cam_stream_rd_en  (1'b0),

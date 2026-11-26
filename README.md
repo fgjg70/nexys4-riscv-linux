@@ -39,7 +39,8 @@ digital/
 | **DSP48E1** | **4** / 240 | **1.67%**（统一 33×33 乘法器） |
 | **`sys_clk` 布线后主频** | **100.52 MHz**（**`WNS = +0.052 ns`，`TNS = 0.000 ns`，0 / 11,876 违例**） | **默认 `opt/place/route` 一次达标 100 MHz**，通过 128-bit 双异步 FIFO 与 75 MHz MIG `ui_clk` 解耦 |
 | **`mig_ddr2_bridge` 异频桥** | 165 LUT / 458 FF / 4.5 BRAM Tile（16 项 Posted Write + 128-bit 读行缓冲驻留 100 MHz 侧） | `sys_clk` (100 MHz) **`+4.332 ns`** / `mig_clk` (75 MHz) **`+7.606 ns`** / `WHS = +0.099 ns` |
-| **`cam_pclk` / `vga_clk`** | 48 MHz 裕量 +14.879 ns / 25 MHz 裕量 +34.892 ns | `WHS = +0.031 ns` / 0 组合环 / 0 Critical Warnings |
+| **全芯片真 IP 比特流 (`top_nexys4_ddr`)** | 含真实 `clk_wiz_0` + `mig_7series_0` (128 MB DDR2) + `board_bist.hex`：**10,825 LUT (17.07%) / 7,555 FF (5.96%, 0 Latch) / 13.5 BRAM (10.00%) / 4 DSP** | **`WNS = +0.049 ns` (`clk_100m` 0/12,270 违例), `WHS = +0.019 ns` (0/26,953 违例), `ui_clk` +4.332 ns, 0 DRC Errors**, 已产 `.bit` / QSPI `SPIx4` `.bin` |
+| **`cam_pclk` / `vga_clk`** | 48 MHz 裕量 +15.169 ns / 25 MHz 裕量 +33.949 ns | `WHS = +0.019 ns` / 0 组合环 / 0 Critical Warnings |
 
 ---
 
@@ -73,10 +74,14 @@ python tools/verify.py --all-modes
 python sw/soc_test/build.py
 ```
 
-3. **一键生成 Vivado Nexys 4 DDR 完整工程**（自动创建 200/100/25/24 MHz `clk_wiz_0` 并导入 `fpga/nexys4_ddr/mig.prj`，SoC 跑 100 MHz 经异步 FIFO 桥接 75 MHz DDR2）：
+3. **一键生成 Vivado Nexys 4 DDR 完整工程 / 比特流**（自动创建 200/100/25/24 MHz `clk_wiz_0`、导入实板版 `mig.prj` v4.1 并内嵌 `sw/board_bist/board_bist.hex` 上电自检 BootROM）：
 
 ```powershell
+# 仅生成 Vivado 工程
 vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs build_vivado
+
+# 一键综合 + 实现 + 时序/DRC/CDC 报告 + 比特流 (.bit) + QSPI SPIx4 (.bin)
+vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs build_vivado bitstream
 ```
 
 详细架构、JA+JB OV5640 引脚表与分阶段路线见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，四轮架构演进与全局审计优化记录见 [docs/AUDIT_OPTIMIZATION.md](docs/AUDIT_OPTIMIZATION.md)，迁移溯源见 [docs/MIGRATION-NOTES.md](docs/MIGRATION-NOTES.md)。
