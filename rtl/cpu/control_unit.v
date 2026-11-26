@@ -259,18 +259,23 @@ module control_unit #(
       end
 
       // ------------------------------------------------------------------
-      // SYSTEM: ECALL / EBREAK / MRET / WFI / Zicsr
+      // SYSTEM: ECALL / EBREAK / SRET / MRET / WFI / SFENCE.VMA / Zicsr
       // ------------------------------------------------------------------
       `OPC_SYSTEM: begin
         case (funct3)
           3'b000: begin
-            if ((rs1 != 5'd0) || (rd != 5'd0)) begin
+            if ((funct7 == 7'b0001001) && (rd == 5'd0)) begin
+              // SFENCE.VMA (rs1=vaddr, rs2=asid 均可非零, rd 必须为 0)
+              ctrl[`CTRL_SYS_OP] = `SYS_SFENCE;
+            end
+            else if ((rs1 != 5'd0) || (rd != 5'd0)) begin
               illegal = 1'b1;
             end
             else begin
               case (instr[31:20])
                 12'h000: ctrl[`CTRL_SYS_OP] = `SYS_ECALL;
                 12'h001: ctrl[`CTRL_SYS_OP] = `SYS_EBREAK;
+                12'h102: ctrl[`CTRL_SYS_OP] = `SYS_SRET;
                 12'h105: ctrl[`CTRL_SYS_OP] = `SYS_WFI;
                 12'h302: ctrl[`CTRL_SYS_OP] = `SYS_MRET;
                 default: illegal = 1'b1;

@@ -55,10 +55,14 @@ ABI = {
     't3': 28, 't4': 29, 't5': 30, 't6': 31,
 }
 
-# ---- Zicsr / Zicntr: CSR 名字 -> 地址 ----
+# ---- Zicsr / Zicntr / S-mode: CSR 名字 -> 地址 ----
 CSR_NAME = {
-    'mstatus': 0x300, 'misa': 0x301, 'mie': 0x304, 'mtvec': 0x305,
-    'mcounteren': 0x306, 'mstatush': 0x310, 'mcountinhibit': 0x320,
+    'sstatus': 0x100, 'sie': 0x104, 'stvec': 0x105, 'scounteren': 0x106,
+    'senvcfg': 0x10A, 'sscratch': 0x140, 'sepc': 0x141, 'scause': 0x142,
+    'stval': 0x143, 'sip': 0x144, 'satp': 0x180,
+    'mstatus': 0x300, 'misa': 0x301, 'medeleg': 0x302, 'mideleg': 0x303,
+    'mie': 0x304, 'mtvec': 0x305, 'mcounteren': 0x306, 'menvcfg': 0x30A,
+    'mstatush': 0x310, 'menvcfgh': 0x31A, 'mcountinhibit': 0x320,
     'mscratch': 0x340, 'mepc': 0x341, 'mcause': 0x342, 'mtval': 0x343,
     'mip': 0x344,
     'mcycle': 0xB00, 'minstret': 0xB02, 'mcycleh': 0xB80, 'minstreth': 0xB82,
@@ -359,6 +363,8 @@ def encode(mn, ops, pc, labels):
         return [(4, j_type(value(ops[0], labels, pc, True) & 0x1FFFFF, 0))]
     if mn == 'ret':
         return [(4, i_type(0, 1, 0, 0, 0b1100111))]
+    if mn == 'jr':
+        return [(4, i_type(0, reg(ops[0]), 0, 0, 0b1100111))]
     if mn in R_OPS:
         f7, f3 = R_OPS[mn]
         return [(4, r_type(f7, reg(ops[2]), reg(ops[1]), f3, reg(ops[0])))]
@@ -436,6 +442,12 @@ def encode(mn, ops, pc, labels):
         return [(4, 0x00100073)]
     if mn == 'mret':
         return [(4, 0x30200073)]
+    if mn == 'sret':
+        return [(4, 0x10200073)]
+    if mn == 'sfence.vma':
+        rs1 = reg(ops[0]) if len(ops) >= 1 else 0
+        rs2 = reg(ops[1]) if len(ops) >= 2 else 0
+        return [(4, (0x09 << 25) | (rs2 << 20) | (rs1 << 15) | 0b1110011)]
     if mn == 'wfi':
         return [(4, 0x10500073)]
     if mn == 'fence':

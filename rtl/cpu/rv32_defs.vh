@@ -129,15 +129,24 @@
 `define WB_CSR          2'd3
 
 // ----------------------------------------------------------------------------
-// SYSTEM / FENCE.I 子类型 (3-bit)
+// 特权级编码 (RISC-V Privileged Spec v1.12, 2-bit: U < S < M)
 // ----------------------------------------------------------------------------
-`define SYS_NONE        3'd0
-`define SYS_CSR         3'd1
-`define SYS_ECALL       3'd2
-`define SYS_EBREAK      3'd3
-`define SYS_MRET        3'd4
-`define SYS_FENCEI      3'd5
-`define SYS_WFI         3'd6
+`define PRIV_U          2'b00
+`define PRIV_S          2'b01
+`define PRIV_M          2'b11
+
+// ----------------------------------------------------------------------------
+// SYSTEM / FENCE.I / SFENCE.VMA 子类型 (4-bit)
+// ----------------------------------------------------------------------------
+`define SYS_NONE        4'd0
+`define SYS_CSR         4'd1
+`define SYS_ECALL       4'd2
+`define SYS_EBREAK      4'd3
+`define SYS_MRET        4'd4
+`define SYS_FENCEI      4'd5
+`define SYS_WFI         4'd6
+`define SYS_SRET        4'd7
+`define SYS_SFENCE      4'd8
 
 // ----------------------------------------------------------------------------
 // 下一 PC 来源 (2-bit)
@@ -155,10 +164,10 @@
 `define FWD_MEM_WB      2'd2
 
 // ----------------------------------------------------------------------------
-// 控制束 (56-bit 打包向量 + 命名字段位片, 全零即为安全 NOP)
+// 控制束 (57-bit 打包向量 + 命名字段位片, 全零即为安全 NOP)
 // ----------------------------------------------------------------------------
-`define CTRL_W            56
-`define CTRL_NOP          56'd0
+`define CTRL_W            57
+`define CTRL_NOP          57'd0
 
 `define CTRL_ALU_OP       4:0     // 5-bit: ALU 操作
 `define CTRL_ALU_A_SRC    6:5     // 2-bit: ALU A 来源
@@ -173,15 +182,15 @@
 `define CTRL_WB_SRC       20:19   // 2-bit: 写回数据来源
 `define CTRL_IMM_FMT      23:21   // 3-bit: 立即数格式
 `define CTRL_ILLEGAL      24      // 1-bit: 非法指令标志
-`define CTRL_SYS_OP       27:25   // 3-bit: SYSTEM / FENCE.I 子类型
-`define CTRL_CSR_ADDR     39:28   // 12-bit: CSR 地址
-`define CTRL_CSR_CMD      41:40   // 2-bit: 01=W 10=S 11=C
-`define CTRL_CSR_SRC_IMM  42      // 1-bit: 1=uimm, 0=rs1
-`define CTRL_CSR_UIMM     47:43   // 5-bit: CSR 立即数
-`define CTRL_AMO_EN       48      // 1-bit: RV32A 原子序列使能
-`define CTRL_AMO_OP       53:49   // 5-bit: funct5
-`define CTRL_AMO_AQ       54      // 1-bit: acquire
-`define CTRL_AMO_RL       55      // 1-bit: release
+`define CTRL_SYS_OP       28:25   // 4-bit: SYSTEM / FENCE.I / SFENCE.VMA 子类型
+`define CTRL_CSR_ADDR     40:29   // 12-bit: CSR 地址
+`define CTRL_CSR_CMD      42:41   // 2-bit: 01=W 10=S 11=C
+`define CTRL_CSR_SRC_IMM  43      // 1-bit: 1=uimm, 0=rs1
+`define CTRL_CSR_UIMM     48:44   // 5-bit: CSR 立即数
+`define CTRL_AMO_EN       49      // 1-bit: RV32A 原子序列使能
+`define CTRL_AMO_OP       54:50   // 5-bit: funct5
+`define CTRL_AMO_AQ       55      // 1-bit: acquire
+`define CTRL_AMO_RL       56      // 1-bit: release
 
 // ----------------------------------------------------------------------------
 // 兼容旧基线 (core.v + mmio_subsys.v 裸机测试用) 地址映射
@@ -233,7 +242,7 @@
 // ----------------------------------------------------------------------------
 // 陷阱原因码 (RISC-V Privileged Spec Table 3.6)
 // ----------------------------------------------------------------------------
-// 同步异常 (mcause[31] = 0)
+// 同步异常 (mcause/scause[31] = 0)
 `define CAUSE_INSN_MISALIGN  4'd0
 `define CAUSE_INSN_ACCESS    4'd1
 `define CAUSE_ILLEGAL        4'd2
@@ -242,11 +251,19 @@
 `define CAUSE_LOAD_ACCESS    4'd5
 `define CAUSE_STORE_MISALIGN 4'd6
 `define CAUSE_STORE_ACCESS   4'd7
+`define CAUSE_ECALL_U        4'd8
+`define CAUSE_ECALL_S        4'd9
 `define CAUSE_ECALL_M        4'd11
+`define CAUSE_INSN_PAGE      4'd12
+`define CAUSE_LOAD_PAGE      4'd13
+`define CAUSE_STORE_PAGE     4'd15
 
-// 异步中断 (mcause[31] = 1, 写入 mcause 时由 {1'b1, code} 组合)
+// 异步中断 (mcause/scause[31] = 1, 写入时由 {1'b1, code} 组合)
+`define IRQ_SSIP             4'd1
 `define IRQ_SW               4'd3
+`define IRQ_STIP             4'd5
 `define IRQ_TIMER            4'd7
+`define IRQ_SEIP             4'd9
 `define IRQ_EXT              4'd11
 
 `endif

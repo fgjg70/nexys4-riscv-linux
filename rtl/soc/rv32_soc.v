@@ -91,11 +91,11 @@ module rv32_soc #(
 );
 
   // CPU <-> I-Cache
-  wire        ibus_req, ibus_kill, ibus_valid, ibus_fault;
+  wire        ibus_req, ibus_kill, ibus_valid, ibus_fault, ibus_page_fault;
   wire [31:0] ibus_addr, ibus_rdata;
 
   // CPU <-> D-Cache
-  wire        dbus_re, dbus_we, dbus_stall, dbus_fault;
+  wire        dbus_re, dbus_we, dbus_is_amo, dbus_stall, dbus_fault, dbus_page_fault;
   wire [31:0] dbus_addr, dbus_wdata, dbus_rdata;
   wire [3:0]  dbus_wstrb;
   wire        dbus_l0_en;
@@ -103,8 +103,29 @@ module rv32_soc #(
   wire        dbus_fast_hit;
   wire [31:0] dbus_fast_rdata;
 
-  // FENCE.I 握手
+  // FENCE.I / SFENCE.VMA / Sv32 MMU 握手
   wire        fencei_req, fencei_done, icache_flush;
+  wire        sfence_req, satp_flush, sfence_done;
+  wire [31:0] sfence_vaddr;
+  wire [1:0]  mmu_priv, mmu_mpp;
+  wire [31:0] mmu_satp;
+  wire        mmu_i_xlate_en, mmu_sum, mmu_mxr, mmu_mprv;
+
+  // Sv32 MMU <-> I-Cache / D-Cache
+  wire [31:0] ic_va, itlb_miss_va;
+  wire        i_xlate_en, i_utlb_hit, i_utlb_perm_ok, i_utlb_super;
+  wire [19:0] i_utlb_ppn_raw, i_utlb_ppn;
+  wire        itlb_miss_req, itlb_miss_kill, itlb_serving;
+  wire        itlb_resp_valid, itlb_resp_pf, itlb_resp_af;
+
+  wire        d_xlate_en, d_utlb_hit, d_utlb_perm_ok, l0_utlb_ok;
+  wire [19:0] d_utlb_ppn, l0_utlb_ppn;
+  wire        dtlb_miss_req, dtlb_miss_we, dtlb_miss_amo;
+  wire [31:0] dtlb_miss_va, dtlb_resp_pa;
+  wire        dtlb_resp_valid, dtlb_resp_pf, dtlb_resp_af;
+
+  wire        ptw_req, ptw_ack, ptw_err;
+  wire [31:0] ptw_addr, ptw_rdata;
 
   // Cache <-> soc_bus
   wire        dc_req, dc_we, dc_ack, dc_err;
@@ -145,72 +166,161 @@ module rv32_soc #(
 
   // 中断与实时时间
   wire [63:0] mtime_val;
-  wire        irq_sw, irq_timer, irq_ext;
+  wire        irq_sw, irq_timer, irq_ext, irq_sext;
   wire        uart_irq, spi_irq, vga_irq, cam_irq;
 
   rv32_cpu #(
+    .ENABLE_SU    (1),
     .RESET_PC     (RESET_PC),
     .MTVEC_RESET  (32'h8000_0100),
     .BTB_IDX_BITS (7),
     .BTB_PC_TOP   (32)
   ) u_cpu (
-    .clk           (clk),
-    .rst           (rst),
-    .ibus_req      (ibus_req),
-    .ibus_addr     (ibus_addr),
-    .ibus_kill     (ibus_kill),
-    .ibus_rdata    (ibus_rdata),
-    .ibus_valid    (ibus_valid),
-    .ibus_fault    (ibus_fault),
-    .dbus_re       (dbus_re),
-    .dbus_we       (dbus_we),
-    .dbus_addr     (dbus_addr),
-    .dbus_wdata    (dbus_wdata),
-    .dbus_wstrb    (dbus_wstrb),
-    .dbus_rdata    (dbus_rdata),
-    .dbus_stall    (dbus_stall),
-    .dbus_fault    (dbus_fault),
+    .clk             (clk),
+    .rst             (rst),
+    .ibus_req        (ibus_req),
+    .ibus_addr       (ibus_addr),
+    .ibus_kill       (ibus_kill),
+    .ibus_rdata      (ibus_rdata),
+    .ibus_valid      (ibus_valid),
+    .ibus_fault      (ibus_fault),
+    .ibus_page_fault (ibus_page_fault),
+    .dbus_re         (dbus_re),
+    .dbus_we         (dbus_we),
+    .dbus_is_amo     (dbus_is_amo),
+    .dbus_addr       (dbus_addr),
+    .dbus_wdata      (dbus_wdata),
+    .dbus_wstrb      (dbus_wstrb),
+    .dbus_rdata      (dbus_rdata),
+    .dbus_stall      (dbus_stall),
+    .dbus_fault      (dbus_fault),
+    .dbus_page_fault (dbus_page_fault),
     .dbus_l0_en      (dbus_l0_en),
     .dbus_l0_addr    (dbus_l0_addr),
     .dbus_fast_hit   (dbus_fast_hit),
     .dbus_fast_rdata (dbus_fast_rdata),
-    .fencei_req    (fencei_req),
-    .fencei_done   (fencei_done),
-    .mtime_i       (mtime_val),
-    .irq_sw        (irq_sw),
-    .irq_timer     (irq_timer),
-    .irq_ext       (irq_ext),
-    .dbg_pc        (dbg_pc),
-    .dbg_id_pc     (dbg_id_pc),
-    .dbg_instr     (dbg_instr),
-    .dbg_illegal   (dbg_illegal),
-    .dbg_raddr     (5'd0),
-    .dbg_rdata     (),
-    .dbg_mem_we    (),
-    .dbg_mem_addr  (),
-    .dbg_mem_wdata (),
-    .dbg_stall     (),
-    .dbg_redirect  ()
+    .fencei_req      (fencei_req),
+    .fencei_done     (fencei_done),
+    .sfence_req      (sfence_req),
+    .sfence_vaddr    (sfence_vaddr),
+    .satp_flush      (satp_flush),
+    .sfence_done     (sfence_done),
+    .mmu_priv        (mmu_priv),
+    .mmu_satp        (mmu_satp),
+    .mmu_i_xlate_en  (mmu_i_xlate_en),
+    .mmu_sum         (mmu_sum),
+    .mmu_mxr         (mmu_mxr),
+    .mmu_mprv        (mmu_mprv),
+    .mmu_mpp         (mmu_mpp),
+    .mtime_i         (mtime_val),
+    .irq_sw          (irq_sw),
+    .irq_timer       (irq_timer),
+    .irq_ext         (irq_ext),
+    .irq_sext        (irq_sext),
+    .dbg_pc          (dbg_pc),
+    .dbg_id_pc       (dbg_id_pc),
+    .dbg_instr       (dbg_instr),
+    .dbg_illegal     (dbg_illegal),
+    .dbg_raddr       (5'd0),
+    .dbg_rdata       (),
+    .dbg_mem_we      (),
+    .dbg_mem_addr    (),
+    .dbg_mem_wdata   (),
+    .dbg_stall       (),
+    .dbg_redirect    ()
+  );
+
+  sv32_mmu #(
+    .ITLB_ENTRIES (8),
+    .DTLB_ENTRIES (8),
+    .ITLB_IDX_W   (3),
+    .DTLB_IDX_W   (3)
+  ) u_mmu (
+    .clk             (clk),
+    .rst             (rst),
+    .mmu_priv        (mmu_priv),
+    .mmu_satp        (mmu_satp),
+    .mmu_i_xlate_en  (mmu_i_xlate_en),
+    .mmu_sum         (mmu_sum),
+    .mmu_mxr         (mmu_mxr),
+    .mmu_mprv        (mmu_mprv),
+    .mmu_mpp         (mmu_mpp),
+    .sfence_req      (sfence_req),
+    .sfence_vaddr    (sfence_vaddr),
+    .satp_flush      (satp_flush),
+    .sfence_done     (sfence_done),
+    .ic_va           (ic_va),
+    .i_xlate_en      (i_xlate_en),
+    .i_utlb_hit      (i_utlb_hit),
+    .i_utlb_perm_ok  (i_utlb_perm_ok),
+    .i_utlb_super    (i_utlb_super),
+    .i_utlb_ppn_raw  (i_utlb_ppn_raw),
+    .i_utlb_ppn      (i_utlb_ppn),
+    .itlb_miss_req   (itlb_miss_req),
+    .itlb_miss_va    (itlb_miss_va),
+    .itlb_miss_kill  (itlb_miss_kill),
+    .itlb_serving    (itlb_serving),
+    .itlb_resp_valid (itlb_resp_valid),
+    .itlb_resp_pf    (itlb_resp_pf),
+    .itlb_resp_af    (itlb_resp_af),
+    .dc_va           (dbus_addr),
+    .dc_we           (dbus_we),
+    .dc_is_amo       (dbus_is_amo),
+    .d_xlate_en      (d_xlate_en),
+    .d_utlb_hit      (d_utlb_hit),
+    .d_utlb_perm_ok  (d_utlb_perm_ok),
+    .d_utlb_ppn      (d_utlb_ppn),
+    .l0_va           (dbus_l0_addr),
+    .l0_utlb_ok      (l0_utlb_ok),
+    .l0_utlb_ppn     (l0_utlb_ppn),
+    .dtlb_miss_req   (dtlb_miss_req),
+    .dtlb_miss_va    (dtlb_miss_va),
+    .dtlb_miss_we    (dtlb_miss_we),
+    .dtlb_miss_amo   (dtlb_miss_amo),
+    .dtlb_resp_valid (dtlb_resp_valid),
+    .dtlb_resp_pa    (dtlb_resp_pa),
+    .dtlb_resp_pf    (dtlb_resp_pf),
+    .dtlb_resp_af    (dtlb_resp_af),
+    .ptw_req         (ptw_req),
+    .ptw_addr        (ptw_addr),
+    .ptw_ack         (ptw_ack),
+    .ptw_rdata       (ptw_rdata),
+    .ptw_err         (ptw_err)
   );
 
   icache u_icache (
-    .clk        (clk),
-    .rst        (rst),
-    .flush_all  (icache_flush),
-    .ibus_req   (ibus_req),
-    .ibus_addr  (ibus_addr),
-    .ibus_kill  (ibus_kill),
-    .ibus_rdata (ibus_rdata),
-    .ibus_valid (ibus_valid),
-    .ibus_fault (ibus_fault),
-    .mem_req    (ic_req),
-    .mem_we     (ic_we),
-    .mem_addr   (ic_addr),
-    .mem_wdata  (ic_wdata),
-    .mem_wstrb  (ic_wstrb),
-    .mem_ack    (ic_ack),
-    .mem_rdata  (ic_rdata),
-    .mem_err    (ic_err)
+    .clk             (clk),
+    .rst             (rst),
+    .flush_all       (icache_flush),
+    .ibus_req        (ibus_req),
+    .ibus_addr       (ibus_addr),
+    .ibus_kill       (ibus_kill),
+    .ibus_rdata      (ibus_rdata),
+    .ibus_valid      (ibus_valid),
+    .ibus_fault      (ibus_fault),
+    .ibus_page_fault (ibus_page_fault),
+    .ic_va           (ic_va),
+    .i_xlate_en      (i_xlate_en),
+    .i_utlb_hit      (i_utlb_hit),
+    .i_utlb_perm_ok  (i_utlb_perm_ok),
+    .i_utlb_super    (i_utlb_super),
+    .i_utlb_ppn_raw  (i_utlb_ppn_raw),
+    .i_utlb_ppn      (i_utlb_ppn),
+    .itlb_miss_req   (itlb_miss_req),
+    .itlb_miss_va    (itlb_miss_va),
+    .itlb_miss_kill  (itlb_miss_kill),
+    .itlb_serving    (itlb_serving),
+    .itlb_resp_valid (itlb_resp_valid),
+    .itlb_resp_pf    (itlb_resp_pf),
+    .itlb_resp_af    (itlb_resp_af),
+    .mem_req         (ic_req),
+    .mem_we          (ic_we),
+    .mem_addr        (ic_addr),
+    .mem_wdata       (ic_wdata),
+    .mem_wstrb       (ic_wstrb),
+    .mem_ack         (ic_ack),
+    .mem_rdata       (ic_rdata),
+    .mem_err         (ic_err)
   );
 
   dcache u_dcache (
@@ -218,27 +328,49 @@ module rv32_soc #(
     .rst             (rst),
     .dbus_re         (dbus_re),
     .dbus_we         (dbus_we),
+    .dbus_is_amo     (dbus_is_amo),
     .dbus_addr       (dbus_addr),
     .dbus_wdata      (dbus_wdata),
     .dbus_wstrb      (dbus_wstrb),
     .dbus_rdata      (dbus_rdata),
     .dbus_stall      (dbus_stall),
     .dbus_fault      (dbus_fault),
+    .dbus_page_fault (dbus_page_fault),
     .dbus_l0_en      (dbus_l0_en),
     .dbus_l0_addr    (dbus_l0_addr),
     .dbus_fast_hit   (dbus_fast_hit),
     .dbus_fast_rdata (dbus_fast_rdata),
-    .fencei_req   (fencei_req),
-    .fencei_done  (fencei_done),
-    .icache_flush (icache_flush),
-    .mem_req      (dc_req),
-    .mem_we       (dc_we),
-    .mem_addr     (dc_addr),
-    .mem_wdata    (dc_wdata),
-    .mem_wstrb    (dc_wstrb),
-    .mem_ack      (dc_ack),
-    .mem_rdata    (dc_rdata),
-    .mem_err      (dc_err)
+    .fencei_req      (fencei_req),
+    .sfence_req      (sfence_req),
+    .fencei_done     (fencei_done),
+    .icache_flush    (icache_flush),
+    .d_xlate_en      (d_xlate_en),
+    .d_utlb_hit      (d_utlb_hit),
+    .d_utlb_perm_ok  (d_utlb_perm_ok),
+    .d_utlb_ppn      (d_utlb_ppn),
+    .l0_utlb_ok      (l0_utlb_ok),
+    .l0_utlb_ppn     (l0_utlb_ppn),
+    .dtlb_miss_req   (dtlb_miss_req),
+    .dtlb_miss_va    (dtlb_miss_va),
+    .dtlb_miss_we    (dtlb_miss_we),
+    .dtlb_miss_amo   (dtlb_miss_amo),
+    .dtlb_resp_valid (dtlb_resp_valid),
+    .dtlb_resp_pa    (dtlb_resp_pa),
+    .dtlb_resp_pf    (dtlb_resp_pf),
+    .dtlb_resp_af    (dtlb_resp_af),
+    .ptw_req         (ptw_req),
+    .ptw_addr        (ptw_addr),
+    .ptw_ack         (ptw_ack),
+    .ptw_rdata       (ptw_rdata),
+    .ptw_err         (ptw_err),
+    .mem_req         (dc_req),
+    .mem_we          (dc_we),
+    .mem_addr        (dc_addr),
+    .mem_wdata       (dc_wdata),
+    .mem_wstrb       (dc_wstrb),
+    .mem_ack         (dc_ack),
+    .mem_rdata       (dc_rdata),
+    .mem_err         (dc_err)
   );
 
   soc_bus u_bus (
@@ -341,17 +473,18 @@ module rv32_soc #(
   );
 
   plic u_plic (
-    .clk     (clk),
-    .rst     (rst),
-    .req     (plic_req),
-    .we      (plic_we),
-    .addr    (plic_addr),
-    .wdata   (plic_wdata),
-    .wstrb   (plic_wstrb),
-    .ack     (plic_ack),
-    .rdata   (plic_rdata),
-    .irq_src ({ext_irq_in, cam_irq, vga_irq, spi_irq, uart_irq}),
-    .irq_ext (irq_ext)
+    .clk      (clk),
+    .rst      (rst),
+    .req      (plic_req),
+    .we       (plic_we),
+    .addr     (plic_addr),
+    .wdata    (plic_wdata),
+    .wstrb    (plic_wstrb),
+    .ack      (plic_ack),
+    .rdata    (plic_rdata),
+    .irq_src  ({ext_irq_in, cam_irq, vga_irq, spi_irq, uart_irq}),
+    .irq_ext  (irq_ext),
+    .irq_sext (irq_sext)
   );
 
   uart_16550 #(.CLK_HZ(CLK_HZ), .BAUD_HZ(BAUD_HZ)) u_uart (

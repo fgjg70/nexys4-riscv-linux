@@ -32,6 +32,7 @@ set rtl_files [list \
   "$root_dir/rtl/cpu/muldiv.v" \
   "$root_dir/rtl/cpu/csr_file.v" \
   "$root_dir/rtl/cpu/rv32_cpu.v" \
+  "$root_dir/rtl/soc/sv32_mmu.v" \
   "$root_dir/rtl/soc/icache.v" \
   "$root_dir/rtl/soc/dcache.v" \
   "$root_dir/rtl/soc/soc_bus.v" \

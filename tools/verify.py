@@ -56,6 +56,7 @@ SOC_RTL = CPU_RTL + [
 
 LINUX_SOC_RTL = CPU_RTL + [
     "rtl/common/async_fifo.v",
+    "rtl/soc/sv32_mmu.v",
     "rtl/soc/icache.v",
     "rtl/soc/dcache.v",
     "rtl/soc/soc_bus.v",
@@ -162,6 +163,37 @@ TESTS = [
             "ram=sim/prog/soc_test.hex",
             "ram_lat=4",
             "max_cycles=500000",
+        ],
+        "pass_marker": "RESULT : PASS",
+    },
+    {
+        "name": "tb_soc_priv_s",
+        "top": "tb_linux_soc",
+        "files": LINUX_SOC_RTL + ["sim/tb_linux_soc.v"],
+        "plusargs": [
+            "ram=sim/prog/priv_s.hex",
+            "ram_lat=4",
+            "max_cycles=500000",
+        ],
+        "pass_marker": "RESULT : PASS",
+    },
+    {
+        "name": "tb_soc_sv32",
+        "top": "tb_linux_soc",
+        "files": LINUX_SOC_RTL + ["sim/tb_linux_soc.v"],
+        "plusargs": [
+            "ram=sim/prog/sv32_test.hex",
+            "ram_lat=4",
+            "max_cycles=500000",
+        ],
+        "pass_marker": "RESULT : PASS",
+    },
+    {
+        "name": "tb_bootrom_linux",
+        "top": "tb_bootrom_linux",
+        "files": LINUX_SOC_RTL + ["sim/tb_bootrom_linux.v"],
+        "plusargs": [
+            "rom=sw/bootrom_linux/bootrom_linux.hex",
         ],
         "pass_marker": "RESULT : PASS",
     },

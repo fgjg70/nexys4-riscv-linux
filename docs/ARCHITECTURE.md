@@ -60,21 +60,22 @@
 | 第一轮单模块审计 | 统一 33×33 乘法器（DSP 减半）、ALU/分支共享比较器、16 项循环 RAS、NS16550A `thre_ip`、全 CDC `ASYNC_REG`、`ODDR` `CAM_XCLK` | 6,132 (9.67%) | 3,917 (3.09%) | 8 (5.93%) | **4 (1.67%)** | 77.72 MHz |
 | 第二轮全路径优化 (`e806489`, Vivado 2018.3) | BTB 元数据打包 `RAMB18E1` + 后台清零、EX 归并 `WB_PC4`、I-Cache 直出 `data_q` + `q_cacheable_r`、分支非对齐/非法 1 拍寄存陷阱、7-bit `id_sys_stall`、`hazard_unit` 末级门控、`mig_ddr2_bridge` 128-bit 读行缓冲 | 5,742 (9.06%) | 3,427 (2.70%) | 8 (5.93%) | 4 (1.67%) | 93.36 MHz |
 | 第三轮微架构升级 (Vivado 2023.2) | 128 项分布式 RAM Taken-Only BTB + 512 项 Bimodal + 默认 16 项 RAS、8 KB 2 路 VIPT I/D-Cache、256 B 单级 `RAM64M` 0 拍直写 L0D（Load-Use 2→1 拍）、LSU 拆分尾址寄存化、`id_ex_reg` 控制/数据 CE 解耦、PLIC 3 级平衡锦标赛树 | 8,322 (13.13%) | 4,265 (3.36%) | 8.5 (6.30%) | 4 (1.67%) | 90.60 MHz（`soc_test` 84,878 周期） |
-| **第四轮 100 MHz 突破 + 8K BRAM BHT + 异频 DDR2 解耦 (Vivado 2023.2)** | **I-Cache 64 组×64 B (`RAM64M` 21b `{vld,tag}` + `S_FLUSH` + 单级 LUT5 `ibus_rdata`)、`dcache` 纯 FF `dbus_stall_r`/`dbus_fault_r` + 移除 `wb_fault`/`mem_fault` 冗余 `!dbus_stall`、8,192 项单 `RAMB18E1` 同步 Bimodal BHT (`pc_next` 预读)、`u_ras` 剥离条件分支比较器、`id_ex_reg` 272-bit CE 拆扇出、`mig_ddr2_bridge` 100↔75 MHz 128-bit 双异步 FIFO + Posted Write** | **7,315 (11.54%)**（-1,007 LUT） | **3,943 (3.11%)**（-322 FF） | **9.0 (6.67%)**（+桥 4.5 = 13.5） | **4 (1.67%)** | **100.52 MHz**（**`WNS = +0.052 ns`, `TNS = 0`, 0 违例**；实板 100 MHz + 128b 异步 FIFO 解耦 75 MHz DDR2，较 Round 2 实板墙钟提速 **~1.49×**） |
+| **第四轮 100 MHz 突破 + 8K BRAM BHT + 异频 DDR2 解耦 (Vivado 2023.2)** | **I-Cache 64 组×64 B (`RAM64M` 21b `{vld,tag}` + `S_FLUSH` + 单级 LUT5 `ibus_rdata`)、`dcache` 纯 FF `dbus_stall_r`/`dbus_fault_r` + 移除 `wb_fault`/`mem_fault` 冗余 `!dbus_stall`、8,192 项单 `RAMB18E1` 同步 Bimodal BHT (`pc_next` 预读)、`u_ras` 剥离条件分支比较器、`id_ex_reg` 272-bit CE 拆扇出、`mig_ddr2_bridge` 100↔75 MHz 128-bit 双异步 FIFO + Posted Write** | 7,315 (11.54%) | 3,943 (3.11%) | 9.0 (6.67%) | 4 (1.67%) | 100.52 MHz（`WNS = +0.052 ns`, `TNS = 0`） |
+| **第五轮 路线 B（M/S/U + Sv32 MMU + PLIC Ctx1 + Linux 引导栈, Vivado 2023.2）** | **完整 M/S/U 三态 + `medeleg`/`mideleg` + S-CSR + `SRET`/`SFENCE.VMA` + PLIC Context 1 + `sv32_mmu`（双侧 1 uTLB + 8 全相联主 TLB，4 KB/4 MB 巨页 + D-Cache 脏行一致性硬件 PTW）+ 物理标签 VIPT I$/D$/L0D；关键时序剪枝：`S_PTW_LK` 物理重查、`i_xlate_en_r` 寄存态 + I$ 21b/11b 含有效位并行 CARRY4 比较器 + 5-bit `id_is_sys_opc` + `ex_illegal` 统一经 1 拍 `ex_pend_trap_r` 交付** | **9,054 (14.28%)** | **5,255 (4.14%, 0 Latch)** | **9.0 (6.67%)**（+桥 4.5 = 13.5） | **4 (1.67%)** | **100.43 MHz**（OOC **`WNS = +0.043 ns`, `TNS = 0`**, `0/14,301` 违例；全芯片真 IP Linux 比特流 **`WNS = +0.170 ns` (101.73 MHz), `WHS = +0.032 ns`, `0/30,275` 违例, `0 DRC Errors`**） |
 
-完整四轮设计空间评估、缺陷修复与关键路径剖析详见 [docs/AUDIT_OPTIMIZATION.md](AUDIT_OPTIMIZATION.md)。
+完整五轮设计空间评估、缺陷修复与关键路径剖析详见 [docs/AUDIT_OPTIMIZATION.md](AUDIT_OPTIMIZATION.md)。
 
 ---
 
 ## 5. 分阶段里程碑（进展跟踪）
 
-- **Stage 0（已完成）**：`D:\Workspace\digital` 独立新工程、单发射 RV32IMA 基底迁移、全量手工重构为纯 Verilog-2001/2005。
-- **Stage 1A（已完成）**：总线解耦单发射核 `rv32_cpu.v`（32 位全地址 BTB + `flush_all`、`Zicntr`、`WFI`、真 `FENCE.I`、向量化 `mtvec`、精确总线异常）+ 4 KB VIPT `icache`/`dcache` + `soc_bus`/`bootrom`/`clint`/`plic`/`uart_16550` + 4 处边界缺陷修复。
-- **Stage 2 硬件环（已完成）**：
-  - 完整实现并集成 `async_fifo`、`spi_master`（microSD）、`vga_ctrl`（640×480@60Hz 12-bit）、`ov5640_sccb`（16-bit 寄存器地址）、`ov5640_capture`（真实异步 `cam_pclk` RGB565 采集）与 `mig_ddr2_bridge`（128-bit Native MIG 桥）；
-  - 完成 Nexys 4 DDR 实板工程文件（`top_nexys4_ddr.v`、`nexys4_ddr.xdc`、`mig.prj`、`build_project.tcl`、`synth_ooc.tcl`）；
-  - ModelSim **24/24** 严格纯 Verilog 回归通过（含 `tb_periph_stage2` 全外设、MIG 4× 读行缓冲与随机反压压测）、Vivado `xvlog` 全量 0 报错；完成**两轮全局审计与全路径优化**（[docs/AUDIT_OPTIMIZATION.md](AUDIT_OPTIMIZATION.md)），Vivado 2018.3 `xc7a100t-1` 布局布线实测 **93.36 MHz** / **5,742 LUT** / **3,427 FF** / **4 DSP48E1**（覆盖 MIG 75 MHz 留有 +2.622 ns 正裕量）。
-- **Stage 2 软件/实板环（下一步）**：
-  - 在 Vivado 运行 `build_project.tcl` 生成比特流实板点亮 VGA 彩条 + UART 控制台 + microSD SPI 读卡 + DDR2 压测；
-  - 编译并引导 **nommu Linux (`CONFIG_MMU=n`, `CONFIG_RISCV_M_MODE=y`)** + BusyBox shell，扩展 VGA 帧缓冲 DMA / OV5640→VGA 实时预览通路。
-- **Stage 3（路线 B 升级完整 Linux）**：补齐 S/U 特权级、S-CSR/委托、`SRET`/`SFENCE.VMA` 与 Sv32 MMU（ITLB/DTLB + 两级硬件 PTW），跑通 OpenSBI + 标准 MMU Linux。
+- **Stage 0（已完成）**：独立新工程、单发射 RV32IMA 基底迁移、全量手工重构为纯 Verilog-2001/2005。
+- **Stage 1A（已完成）**：总线解耦单发射核 `rv32_cpu.v`（32 位全地址 BTB + `flush_all`、`Zicntr`、`WFI`、真 `FENCE.I`、向量化 `mtvec`、精确总线异常）+ VIPT `icache`/`dcache` + `soc_bus`/`bootrom`/`clint`/`plic`/`uart_16550`。
+- **Stage 2 硬件环（已完成）**：`async_fifo`、`spi_master`、`vga_ctrl`、`ov5640_sccb`、`ov5640_capture`、`mig_ddr2_bridge`（100↔75 MHz 128-bit 异步 FIFO 桥）、Nexys 4 DDR 工程脚本及 `board_bist.hex` 上电自检比特流。
+- **Stage 3 路线 B：M/S/U + Sv32 MMU + Linux 引导栈（代码与比特流签核已完成）**：
+  - **Phase D1（M/S/U + 委托 + PLIC Ctx1）**：`csr_file.v` / `rv32_cpu.v` / `control_unit.v` / `plic.v` 完整支持 M/S/U 特权级、S-CSR、`medeleg`/`mideleg`、`SRET`/`SFENCE.VMA`、PLIC Context 1（S-mode 外部中断 `irq_sext`）与 Spec §3.1.9 中断优先级；新增 `tb_soc_priv_s` 回归。
+  - **Phase D2（Sv32 MMU + 100 MHz 时序闭环）**：新增 `rtl/soc/sv32_mmu.v`，升级 `icache.v` / `dcache.v`（含 256 B L0D）全物理标签零虚拟别名与脏行一致性硬件 PTW，支持 4 KB 普通页 / 4 MB 巨页、SUM/MXR/MPRV、软件 A/D 缺页（Cause 12/13/15）；新增 8 项综合压测 `tb_soc_sv32`；30/30 双模式回归通过，`rv32_soc` OOC 实测 **100.43 MHz (`WNS = +0.043 ns`)**，`tb_linux_soc` 保持 `85,497` 周期 0 退化。
+  - **Phase C（Linux BootROM + DTS + 构建打包套件）**：完成 16 KB `sw/bootrom_linux/bootrom_linux.hex`（SPI Mode 0 microSD `NX4L` + USB-UART `NX4U` 双模加载，按 `a0=0, a1=dtb` 跳转内核/OpenSBI）、真实 SPI SDHC 行为模型端到端仿真 `tb_bootrom_linux`、标准 Sv32/nommu 设备树与构建/打包脚本（`sw/linux/*`），并完成全芯片真 IP Linux 比特流签核（`WNS = +0.170 ns`, `0 DRC Errors`）。
+- **Stage 4 实板联合调试（由协作者在 Nexys 4 DDR 上板推进）**：
+  - 烧录 `bist` 与 `linux` 比特流验证 DDR2 / VGA / UART / microSD / OV5640 实板通路；
+  - 在 Linux 宿主机运行 `sw/linux/build_linux.sh` 构建 OpenSBI + Sv32 Linux v6.x + BusyBox 根文件系统，写入 microSD 或经 `send_uart.py` 串口下载点亮完整 Linux Shell。

@@ -1,4 +1,4 @@
-# 四轮全局审计与系统优化报告（纯 Verilog-2001/2005）
+# 五轮全局审计与系统优化报告（纯 Verilog-2001/2005）
 
 > **目标平台**：Digilent Nexys 4 DDR（Artix-7 `xc7a100tcsg324-1`，MIG 7 Series DDR2 `ui_clk = 75.0 MHz`）
 > **基线提交**：`a957b1a`（Stage 2 完整外设基线：`6,358 LUT` / `3,951 FF` / `8 BRAM36` / `8 DSP48E1` / `79.05 MHz`）
@@ -160,3 +160,27 @@
    - 128-bit（4 字）读行缓冲 `rd_buf` 留在 `100 MHz` 侧，64 B I-Cache 填充仅需 4 次 CDC、32 B D-Cache 填充仅需 2 次 CDC，同行后 3 字 10 ns 直出；
    - 16 项 × 172-bit `u_req_fifo` 同时按程序顺序承载写请求与读请求：写请求未满即 1 拍应答（100 MHz 全速吞下整行 32 B D-Cache 脏行回写）并失效命中 `rd_buf`，后继读请求排在同一队列之后确保 MIG 后端严格先写后读；
    - `sim/tb_periph_stage2.v` 升级为真实 **100 MHz（10 ns）vs 75 MHz（13.334 ns）** 异频异步压测，覆盖 24 次连续 Posted Write 满队反压、4×/6× 突发计数断言、写命中失效与同址高频读写交替，24/24 回归全量通过；`top_nexys4_ddr.v` 通过纯 Verilog `xvlog`/`xelab` 编译细化 0 报错。
+
+---
+
+## 第五轮：路线 B（M/S/U + 委托 + PLIC Ctx1 + Sv32 MMU）100 MHz 时序收口与全芯片 Linux 比特流签核
+
+在 Round 4（100.52 MHz）基础上完整实现 RISC-V M/S/U 特权级、异常/中断委托（`medeleg`/`mideleg`）、PLIC Context 1（S-mode 外部中断）、Sv32 MMU（`rtl/soc/sv32_mmu.v`）与物理标签 VIPT I$/D$/L0D + D-Cache 脏行一致性硬件 PTW，经 4 轮精准关键路径剪枝将布线后 `WNS` 从 `-2.134 ns`（`TNS = -3,248.7 ns`）一路推回 **`+0.043 ns`（`TNS = 0.000 ns`）**，全芯片真 IP Linux 比特流实测 **`WNS = +0.170 ns`**。
+
+### 时序收敛实测轨迹（Vivado 2023.2 `xc7a100tcsg324-1`，默认 `opt/place/route`）
+
+| 迭代 | 关键路径诊断与落地剪枝 | LUT | FF (0 Latch) | BRAM | Post-Route `WNS` | Post-Route `TNS` |
+|---|---|---:|---:|---:|---:|---:|
+| `ooc_sv32_v1` | 初版 M/S/U + 16×2 主 TLB + 一致性 PTW 接入基线 | 10,364 | 5,977 | 9.0 | -2.134 ns | -3,248.7 ns |
+| `ooc_sv32_v2` | Cut #1：`sv32_mmu` 主 TLB 写使能 `fill_itlb_en`/`fill_dtlb_en` 彻底脱离 `ibus_kill`/`satp_flush`；`rv32_cpu` CSR/xRET/exc 改用 `!lsu_stall` 摆脱 `muldiv -> hold_mem`；`csr_exists` 3 级并行分段 | — | — | 9.0 | -2.001 ns | -559.9 ns (-82.8%) |
+| `ooc_sv32_v3` | Cut #2：`dcache` 新增 `S_PTW_LK` 态使 `lk_pa`/`lk_idx` 纯 FF 选通（斩断 `amo_wait -> in_req -> ptw_accept -> tag_ram` ~5.0 ns）；`csr_file` 增寄存态 `i_xlate_en_r` + `icache` Bare/Sv32 并行 CARRY4 比较器 | 10,384 | 5,992 | 9.0 | -1.211 ns | -214.3 ns |
+| `ooc_sv32_v4` | Cut #3：`icache` 将 `tag[20]` 有效位并入 21b/11b CARRY4 折叠 `q_way0/1` 为单级 LUT6；`rv32_cpu` `id_is_sys_opc` 缩减为 5-bit `if_instr[6:2]`；主 ITLB/DTLB 定型为 1 uTLB + 8 全相联主 TLB（4 向布线拥塞全部清零） | 9,296 | 5,249 | 9.0 | -0.906 ns | -83.2 ns |
+| **`ooc_sv32_v5` (签核)** | **Cut #4：`rv32_cpu` 将 `ex_illegal`（含 `csr_exists`/`csr_illegal`/`priv_illegal`）全部经已有 1 拍精确寄存陷阱 `ex_pend_trap_r` 交付并同步清零 `u_ex_mem` 控制字、`satp_we_taken` 脱离 `csr_exists` 链** | **9,054 (14.28%)** | **5,255 (4.14%)** | **9.0 (6.67%)** | **`+0.043 ns` (100.43 MHz)** | **`0.000 ns` (`0 / 14,301`)** |
+| **全芯片 Linux 比特流 (`top_nexys4_ddr`)** | **真实 `clk_wiz_0` + `mig_7series_0` (128 MB DDR2) + Sv32 MMU + `bootrom_linux.hex`（`SPIx4` `.bit`/`.bin`）** | **12,527 (19.76%)** | **8,869 (6.99%)** | **13.5 (10.00%)** | **`+0.170 ns` (101.73 MHz)** | **`0.000 ns` (`0 / 30,275`, `WHS = +0.032 ns`)** |
+
+### 第五轮回归与功能签核清单
+
+- [x] **100% 纯 Verilog-2001/2005 零违规**：`rtl/`、`fpga/`、`sim/` 共 0 个 `.sv` 文件，所有仿真与综合均严格不传 `-sv`/`--sv`。
+- [x] **30/30 双模式严格纯 Verilog 回归全通过**：`default(radix-2)` 15/15 + `DIV_RADIX4` 15/15，新增 `tb_soc_priv_s`（3,351 周期，覆盖 M/S/U、`medeleg`/`mideleg`、`SRET`/`TVM`/`TW`/`TSR`/PLIC Context 1）、`tb_soc_sv32`（33,980 周期，覆盖 8 项 Sv32 脏行一致性 PTW / 4 MB 巨页 / 共享 PA L0D 零别名 / 跨页非对齐 / SUM/MXR / 软件 A/D / 动态重映射 / U-mode 虚址执行 / `MPRV=1`）、`tb_bootrom_linux`（真实 SPI Mode 0 SDHC 行为卡端到端引导）。
+- [x] **裸机性能零退化**：`tb_linux_soc` (`soc_test.hex`, `ram_lat=4`) 实测 **`85,497` 周期**，与 Round 4 逐拍一致。
+- [x] **全芯片真 IP 比特流签核**：`top_nexys4_ddr`（`bootrom_linux.hex`）`0 DRC Errors`、`0 Critical Warnings`、`0` 组合环、`0 Latch`，已成功输出 `.bit` 与 QSPI `SPIx4` `.bin`。

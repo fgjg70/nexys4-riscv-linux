@@ -14,6 +14,7 @@ module id_ex_reg (
   input  wire                bubble,
   input  wire                valid_in,
   input  wire                if_fault_in,
+  input  wire                if_pf_in,
   input  wire [31:0]         instr_in,
 
   input  wire [`CTRL_W-1:0]  ctrl_in,
@@ -32,6 +33,7 @@ module id_ex_reg (
   output reg  [`CTRL_W-1:0]  ctrl,
   output reg                 valid,
   output reg                 if_fault,
+  output reg                 if_pf,
   output reg  [31:0]         instr,
   output reg  [31:0]         pc,
   output reg  [31:0]         pc_plus4,
@@ -46,12 +48,13 @@ module id_ex_reg (
   output reg  [1:0]          pred_ctr
 );
 
-  // 控制段 (受 flush || bubble 清零为合法 NOP，扇出仅 ~62 位)
+  // 控制段 (受 flush || bubble 清零为合法 NOP，扇出仅 ~64 位)
   always @(posedge clk or posedge rst) begin
     if (rst) begin
       ctrl       <= `CTRL_NOP;
       valid      <= 1'b0;
       if_fault   <= 1'b0;
+      if_pf      <= 1'b0;
       rd_addr    <= 5'd0;
       pred_taken <= 1'b0;
     end
@@ -59,6 +62,7 @@ module id_ex_reg (
       ctrl       <= `CTRL_NOP;
       valid      <= 1'b0;
       if_fault   <= 1'b0;
+      if_pf      <= 1'b0;
       rd_addr    <= 5'd0;
       pred_taken <= 1'b0;
     end
@@ -66,6 +70,7 @@ module id_ex_reg (
       ctrl       <= ctrl_in;
       valid      <= valid_in;
       if_fault   <= if_fault_in;
+      if_pf      <= if_pf_in;
       rd_addr    <= rd_addr_in;
       pred_taken <= pred_taken_in;
     end

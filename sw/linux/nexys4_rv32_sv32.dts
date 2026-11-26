@@ -1,0 +1,93 @@
+// ============================================================================
+// nexys4_rv32_sv32.dts — Nexys 4 DDR RV32IMA + Sv32 MMU 标准 Linux 设备树
+// ----------------------------------------------------------------------------
+// 严格对齐 rtl/soc/rv32_soc.v & fpga/nexys4_ddr/top_nexys4_ddr.v (100 MHz):
+//   - CPU0      : RV32IMA + Zicsr + Zifencei + M/S/U + Sv32 MMU @ 100 MHz
+//   - DDR2 RAM  : 128 MB (0x8000_0000 .. 0x87FF_FFFF)
+//   - CLINT     : 0x0200_0000, 1 MHz timebase (CLINT_TICK_DIV = 100)
+//   - PLIC      : 0x0C00_0000, 7 sources, Context 0 (M-mode) + Context 1 (S-mode)
+//   - NS16550A  : 0x1000_0000, reg-shift=2, reg-io-width=4, 100 MHz, IRQ 1
+// 编译命令:
+//   dtc -I dts -O dtb -o nexys4_rv32_sv32.dtb sw/linux/nexys4_rv32_sv32.dts
+// ============================================================================
+
+/dts-v1/;
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	compatible = "digilent,nexys4-ddr-rv32", "riscv-minimal";
+	model = "Nexys 4 DDR RV32IMA-Sv32 Linux SoC (100 MHz)";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		bootargs = "console=ttyS0,115200n8 earlycon=sbi keep_bootcon root=/dev/ram0 rdinit=/init";
+		stdout-path = "serial0:115200n8";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <1000000>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "riscv";
+			reg = <0>;
+			riscv,isa = "rv32ima_zicsr_zifencei";
+			mmu-type = "riscv,sv32";
+			clock-frequency = <100000000>;
+			status = "okay";
+
+			cpu0_intc: interrupt-controller {
+				#interrupt-cells = <1>;
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+			};
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x08000000>;
+	};
+
+	soc {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "simple-bus";
+		ranges;
+
+		clint0: clint@2000000 {
+			compatible = "sifive,clint0", "riscv,clint0";
+			reg = <0x02000000 0x00010000>;
+			interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
+		};
+
+		plic0: interrupt-controller@c000000 {
+			#interrupt-cells = <1>;
+			#address-cells = <0>;
+			compatible = "sifive,plic-1.0.0", "riscv,plic0";
+			reg = <0x0c000000 0x00400000>;
+			interrupt-controller;
+			riscv,ndev = <7>;
+			/* Context 0 = Hart 0 M-mode (11), Context 1 = Hart 0 S-mode (9) */
+			interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;
+		};
+
+		uart0: serial@10000000 {
+			compatible = "ns16550a";
+			reg = <0x10000000 0x00000100>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			clock-frequency = <100000000>;
+			current-speed = <115200>;
+			interrupt-parent = <&plic0>;
+			interrupts = <1>;
+			status = "okay";
+		};
+	};
+};

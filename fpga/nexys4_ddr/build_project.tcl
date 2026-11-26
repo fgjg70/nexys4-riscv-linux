@@ -4,16 +4,18 @@
 # Round 4 架构: rv32_soc 跑 100 MHz (clk_100m)，经 128-bit 双异步 FIFO 与 75 MHz MIG 解耦
 #
 # 用法:
-#   vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs <PROJ_DIR> [project|synth|bitstream]
+#   vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs <PROJ_DIR> [project|synth|bitstream] [bist|linux]
 # 示例:
-#   vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs build_vivado            # 仅生成工程
-#   vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs build_vivado bitstream  # 一键综合/实现/报告/比特流/.bin
+#   vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs build_vivado                  # 仅生成工程
+#   vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs build_vivado bitstream       # 上电自检 BootROM 比特流
+#   vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs build_vivado bitstream linux # Linux BootROM 比特流
 # ============================================================================
 
 set script_dir [file dirname [file normalize [info script]]]
 set root_dir   [file normalize "$script_dir/../.."]
 set proj_dir   [expr {$argc > 0 ? [file normalize [lindex $argv 0]] : "$root_dir/build_vivado"}]
 set mode       [expr {$argc > 1 ? [lindex $argv 1] : "project"}]
+set rom_sel    [expr {$argc > 2 ? [lindex $argv 2] : "bist"}]
 set part       "xc7a100tcsg324-1"
 
 create_project nexys4_riscv_soc $proj_dir -part $part -force
@@ -40,6 +42,7 @@ set rtl_files [list \
   "$root_dir/rtl/cpu/muldiv.v" \
   "$root_dir/rtl/cpu/csr_file.v" \
   "$root_dir/rtl/cpu/rv32_cpu.v" \
+  "$root_dir/rtl/soc/sv32_mmu.v" \
   "$root_dir/rtl/soc/icache.v" \
   "$root_dir/rtl/soc/dcache.v" \
   "$root_dir/rtl/soc/soc_bus.v" \
@@ -60,13 +63,17 @@ add_files -norecurse $rtl_files
 set_property include_dirs [list "$root_dir/rtl/cpu"] [current_fileset]
 set_property top top_nexys4_ddr [current_fileset]
 
-# 绑定 16 KB 实板上电自检 BootROM 镜像 (如存在 sw/board_bist/board_bist.hex)
-set rom_hex "$root_dir/sw/board_bist/board_bist.hex"
+# 绑定 16 KB BootROM 镜像 (默认 bist -> board_bist.hex; 传 linux -> bootrom_linux.hex)
+if {$rom_sel eq "linux"} {
+  set rom_hex "$root_dir/sw/bootrom_linux/bootrom_linux.hex"
+} else {
+  set rom_hex "$root_dir/sw/board_bist/board_bist.hex"
+}
 if {[file exists $rom_hex]} {
   add_files -norecurse $rom_hex
   set_property file_type {Memory Initialization Files} [get_files $rom_hex]
   set_property verilog_define [list "ROM_INIT_FILE=\"$rom_hex\""] [current_fileset]
-  puts "=== BootROM Init Image Attached: $rom_hex ==="
+  puts "=== BootROM Init Image Attached ($rom_sel): $rom_hex ==="
 }
 
 # 约束文件
