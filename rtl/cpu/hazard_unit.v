@@ -23,13 +23,13 @@ module hazard_unit (
   input  wire       lsu_stall,
   input  wire       ex_busy,
   input  wire       id_sys_stall,
+  input  wire       id_sys_stall_raw,
   input  wire       redirect_raw,
 
   output reg  [1:0] fwd_a_pre,
   output reg  [1:0] fwd_b_pre,
   output wire       pipe_stall,
-  output wire       stall_no_l0,
-  output wire       load_use_mem_hit,
+  output wire       stall_pc_fast,
   output wire       id_ex_bubble,
   output wire       hold_mem,
   output wire       redirect
@@ -45,16 +45,20 @@ module hazard_unit (
                           (ex_mem_rd != 5'd0) &&
                           ((ex_mem_rd == if_id_rs1) || (ex_mem_rd == if_id_rs2));
   wire load_use_ex      = id_valid && load_use_ex_raw;
-  assign load_use_mem_hit = id_valid && load_use_mem_cmp;
+  wire load_use_mem_hit = id_valid && load_use_mem_cmp;
   wire load_use         = load_use_ex || (load_use_mem_hit && !mem_fast_load);
 
   // id_sys_stall: 在 ID 段暂停 SYSTEM/异常指令直到在途访存离开 EX/MEM，
   // 复用气泡注入路径，既保证 WB 访存异常精确性又避免任何前递陈旧问题。
   wire id_stall = load_use || id_sys_stall;
 
-  assign stall_no_l0  = load_use_ex || id_sys_stall || lsu_stall || ex_busy;
-  assign pipe_stall   = stall_no_l0 || (load_use_mem_hit && !mem_fast_load);
-  assign id_ex_bubble = id_stall && !(lsu_stall || ex_busy);
+  // 时序恒等化简: pc_hold_sel 外部已含 !id_en (!boot_done || !ibus_valid)，
+  // 由布尔恒等式 !id_en || (id_en && X) == !id_en || X，stall_pc_fast 彻底绕过
+  // ibus_valid -> id_en -> id_valid -> load_use_ex 4 级串行 LUT (~2.5 ns 净收益!)
+  assign stall_pc_fast = load_use_ex_raw || (load_use_mem_cmp && !mem_fast_load) ||
+                         id_sys_stall_raw || lsu_stall || ex_busy;
+  assign pipe_stall    = load_use || id_sys_stall || lsu_stall || ex_busy;
+  assign id_ex_bubble  = id_stall && !(lsu_stall || ex_busy);
   assign hold_mem     = lsu_stall || ex_busy;
   assign redirect     = redirect_raw && !(lsu_stall || ex_busy || load_use_ex);
 

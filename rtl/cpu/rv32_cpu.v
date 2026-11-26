@@ -192,6 +192,7 @@ module rv32_cpu #(
   wire [`CTRL_W-1:0] ex_mem_ctrl;
   wire [31:0]        ex_mem_alu_out, ex_mem_store_data, ex_mem_pc_plus4;
   wire [4:0]         ex_mem_rd;
+  wire               ex_mem_needs_split;
 
   // MEM
   wire [31:0] mem_load_data;
@@ -222,7 +223,7 @@ module rv32_cpu #(
 
   // 流水线控制
   (* max_fanout = 32 *) wire pipe_stall;
-  wire        stall_no_l0, load_use_mem_hit;
+  wire        stall_pc_fast;
   wire        if_id_flush, hold_mem;
   wire        br_redir, br_redir_eff;
   reg         br_redir_r;
@@ -249,10 +250,9 @@ module rv32_cpu #(
   assign boot_done = boot_done_r;
 `endif
 
-  // Round 3 时序优化: pc_hold_sel 合并 fetch_hold && !pc_flush 供 u_pc.stall 与 pc_next 共用
-  // (u_pc 内部 flush 优先级高于 stall，功能完全等价，将 LUT5+LUT3 压缩为单级 LUT6)
+  // 布尔恒等化简: !boot_done || !ibus_valid 已覆盖 !id_en，stall_pc_fast 不再串联 ibus_valid
   (* max_fanout = 16 *) wire pc_hold_sel =
-      (stall_no_l0 || !boot_done || !ibus_valid || (load_use_mem_hit && !mem_fast_load)) && !pc_flush;
+      (!boot_done || !ibus_valid || stall_pc_fast) && !pc_flush;
 
   pc #(.XLEN(XLEN), .RESET_PC(RESET_PC)) u_pc (
     .clk       (clk),
@@ -835,7 +835,8 @@ module rv32_cpu #(
   // 100% 保持精确异常优先级同时再砍掉 1 级 LUT6 (~0.85 ns)!
   wire id_is_sys_opc    = (if_instr[6:2] == 5'b11100) || (if_instr[6:2] == 5'b00011);
   wire id_mem_in_flight = id_ex_is_mem || ex_mem_is_mem;
-  wire id_sys_stall     = id_en && id_mem_in_flight && (if_fault || if_pf || id_is_sys_opc);
+  wire id_sys_stall_raw = id_mem_in_flight && (ibus_fault || ibus_page_fault || id_is_sys_opc);
+  wire id_sys_stall     = id_en && id_sys_stall_raw;
   wire ex_busy_all      = md_busy || wfi_stall || fencei_stall || sfence_stall;
 
   hazard_unit u_hazard (
@@ -852,12 +853,12 @@ module rv32_cpu #(
     .lsu_stall        (lsu_stall),
     .ex_busy          (ex_busy_all),
     .id_sys_stall     (id_sys_stall),
+    .id_sys_stall_raw (id_sys_stall_raw),
     .redirect_raw     (redirect_raw),
     .fwd_a_pre        (fwd_a_pre),
     .fwd_b_pre        (fwd_b_pre),
     .pipe_stall       (pipe_stall),
-    .stall_no_l0      (stall_no_l0),
-    .load_use_mem_hit (load_use_mem_hit),
+    .stall_pc_fast    (stall_pc_fast),
     .id_ex_bubble     (id_ex_bubble),
     .hold_mem         (hold_mem),
     .redirect         (redirect)
@@ -881,27 +882,35 @@ module rv32_cpu #(
   // ==========================================================================
   // EX/MEM (遇 ex_pend_trap_eff 同步清零 ctrl_in，确保非法 CSR 绝不提交写 rd)
   // ==========================================================================
-  wire ex_mem_squash = !id_ex_valid || redir_kill || ex_pend_trap_eff;
+  // 访存地址低 2 位直接由 2-bit (ex_rs1[1:0] + id_ex_imm[1:0]) 算出，彻底绕开完整 32-bit ALU/SLTU/CSR 树 (~5.5 ns)!
+  wire [1:0] ex_mem_lo2  = ex_rs1[1:0] + id_ex_imm[1:0];
+  wire ex_mem_squash     = !id_ex_valid || redir_kill || ex_pend_trap_eff;
+  wire ex_needs_split_in = !ex_mem_squash &&
+                           (id_ex_ctrl[`CTRL_MEM_READ] || id_ex_ctrl[`CTRL_MEM_WRITE]) &&
+                           (((id_ex_ctrl[`CTRL_MEM_SIZE] == `MEM_HALF) && (ex_mem_lo2 == 2'd3)) ||
+                            ((id_ex_ctrl[`CTRL_MEM_SIZE] == `MEM_WORD) && (ex_mem_lo2 != 2'd0)));
 
   ex_mem_reg u_ex_mem (
-    .clk           (clk),
-    .rst           (rst),
-    .stall         (hold_mem),
-    .flush         (trap_enter || br_redir_r),
-    .valid_in      (!ex_mem_squash),
-    .pc_in         (id_ex_pc),
-    .ctrl_in       (ex_mem_squash ? `CTRL_NOP : id_ex_ctrl),
-    .alu_out_in    (ex_result),
-    .store_data_in (ex_rs2),
-    .pc_plus4_in   (id_ex_pc_plus4),
-    .rd_addr_in    (id_ex_rd),
-    .valid         (ex_mem_valid),
-    .pc            (ex_mem_pc),
-    .ctrl          (ex_mem_ctrl),
-    .alu_out       (ex_mem_alu_out),
-    .store_data    (ex_mem_store_data),
-    .pc_plus4      (ex_mem_pc_plus4),
-    .rd_addr       (ex_mem_rd)
+    .clk            (clk),
+    .rst            (rst),
+    .stall          (hold_mem),
+    .flush          (trap_enter || br_redir_r),
+    .valid_in       (!ex_mem_squash),
+    .pc_in          (id_ex_pc),
+    .ctrl_in        (ex_mem_squash ? `CTRL_NOP : id_ex_ctrl),
+    .alu_out_in     (ex_result),
+    .store_data_in  (ex_rs2),
+    .pc_plus4_in    (id_ex_pc_plus4),
+    .rd_addr_in     (id_ex_rd),
+    .needs_split_in (ex_needs_split_in),
+    .valid          (ex_mem_valid),
+    .pc             (ex_mem_pc),
+    .ctrl           (ex_mem_ctrl),
+    .alu_out        (ex_mem_alu_out),
+    .store_data     (ex_mem_store_data),
+    .pc_plus4       (ex_mem_pc_plus4),
+    .rd_addr        (ex_mem_rd),
+    .needs_split    (ex_mem_needs_split)
   );
 
   // ==========================================================================
@@ -925,6 +934,7 @@ module rv32_cpu #(
     .req_addr        (ex_mem_alu_out),
     .req_wdata       (ex_mem_store_data),
     .req_cancel      (any_bus_fault),
+    .req_needs_split (ex_mem_needs_split),
     .dmem_addr       (dbus_addr),
     .dmem_wdata      (dbus_wdata),
     .dmem_wstrb      (dbus_wstrb),

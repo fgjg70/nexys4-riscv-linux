@@ -21,6 +21,7 @@ module load_store_unit (
   input  wire [31:0] req_addr,
   input  wire [31:0] req_wdata,
   input  wire        req_cancel,
+  input  wire        req_needs_split,
 
   // RV32A 原子指令接口
   input  wire        amo_en,
@@ -76,11 +77,11 @@ module load_store_unit (
   reg        uns_wb;
   reg        split_wb;
 
-  wire [1:0]  off        = req_addr[1:0];
-  wire [31:0] size_bytes = (req_size == `MEM_BYTE) ? 32'd1 :
-                           (req_size == `MEM_HALF) ? 32'd2 : 32'd4;
-  wire        needs_split = (req_read || req_write) &&
-                            (({30'd0, off} + size_bytes) > 32'd4);
+  wire [1:0]  off         = req_addr[1:0];
+  wire [31:0] size_bytes  = (req_size == `MEM_BYTE) ? 32'd1 :
+                            (req_size == `MEM_HALF) ? 32'd2 : 32'd4;
+  // 预寄存自 EX 段，消除 MEM 段 alu_out_reg[1] -> needs_split -> lsu_stall -> trap_req 关键路径
+  wire        needs_split = req_needs_split;
 
   wire [31:0] head_addr = {req_addr[31:2], 2'b00};
   // Round 3 时序优化: 拆分尾字地址 tail_addr (head_addr+4) 在 S_IDLE->S_HEAD 边沿寄存入 amo_addr_r

@@ -19,6 +19,7 @@ module ex_mem_reg (
   input  wire [31:0]        store_data_in,
   input  wire [31:0]        pc_plus4_in,
   input  wire [4:0]         rd_addr_in,
+  input  wire               needs_split_in,
 
   output reg                valid,
   output reg  [31:0]        pc,
@@ -26,36 +27,40 @@ module ex_mem_reg (
   output reg  [31:0]        alu_out,
   output reg  [31:0]        store_data,
   output reg  [31:0]        pc_plus4,
-  output reg  [4:0]         rd_addr
+  output reg  [4:0]         rd_addr,
+  output reg                needs_split
 );
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
-      valid      <= 1'b0;
-      pc         <= 32'd0;
-      ctrl       <= `CTRL_NOP;
-      alu_out    <= 32'd0;
-      store_data <= 32'd0;
-      pc_plus4   <= 32'd0;
-      rd_addr    <= 5'd0;
+      valid       <= 1'b0;
+      pc          <= 32'd0;
+      ctrl        <= `CTRL_NOP;
+      alu_out     <= 32'd0;
+      store_data  <= 32'd0;
+      pc_plus4    <= 32'd0;
+      rd_addr     <= 5'd0;
+      needs_split <= 1'b0;
     end
     else if (flush) begin
-      valid      <= 1'b0;
-      pc         <= 32'd0;
-      ctrl       <= `CTRL_NOP;
-      alu_out    <= 32'd0;
-      store_data <= 32'd0;
-      pc_plus4   <= 32'd0;
-      rd_addr    <= 5'd0;
+      valid       <= 1'b0;
+      pc          <= 32'd0;
+      ctrl        <= `CTRL_NOP;
+      alu_out     <= 32'd0;
+      store_data  <= 32'd0;
+      pc_plus4    <= 32'd0;
+      rd_addr     <= 5'd0;
+      needs_split <= 1'b0;
     end
     else if (!stall) begin
-      valid      <= valid_in;
-      pc         <= pc_in;
-      ctrl       <= ctrl_in;
-      alu_out    <= alu_out_in;
-      store_data <= store_data_in;
-      pc_plus4   <= pc_plus4_in;
-      rd_addr    <= rd_addr_in;
+      valid       <= valid_in;
+      pc          <= pc_in;
+      ctrl        <= ctrl_in;
+      alu_out     <= alu_out_in;
+      store_data  <= store_data_in;
+      pc_plus4    <= pc_plus4_in;
+      rd_addr     <= rd_addr_in;
+      needs_split <= needs_split_in;
     end
   end
 

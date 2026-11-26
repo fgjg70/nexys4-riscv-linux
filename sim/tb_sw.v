@@ -21,9 +21,10 @@ module tb_sw;
   // 在 boot 时与 u_dut.u_cpu.u_btb.IDX_BITS / PC_TOP 显式断言一致, 且逐拍与 pred_hit 自证)
   localparam BTB_IDX_BITS = 7;
   localparam BTB_PC_TOP   = 32;
+  localparam BTB_EPOCH_W  = 8;
   localparam BTB_TAG_LSB  = BTB_IDX_BITS + 2;
   localparam BTB_TAG_W    = BTB_PC_TOP - BTB_TAG_LSB;
-  localparam BTB_META_W   = BTB_TAG_W + 2;
+  localparam BTB_META_W   = BTB_EPOCH_W + 2 + BTB_TAG_W;
   localparam BTB_N        = (1 << BTB_IDX_BITS);
 
   localparam [31:0] MMIO_MARK_A   = `MMIO_MARK;
@@ -249,7 +250,9 @@ module tb_sw;
       idx = pc_in[BTB_IDX_BITS+1:2];
       tg  = pc_in[BTB_PC_TOP-1:BTB_TAG_LSB];
       m   = u_dut.u_cpu.u_btb.meta_ram[idx];
-      btb_has_entry = u_dut.u_cpu.u_btb.valid_arr[idx] && (m[BTB_TAG_W-1:0] == tg);
+      btb_has_entry = !u_dut.u_cpu.u_btb.scrubbing &&
+                      (m[BTB_META_W-1 : BTB_TAG_W+2] == u_dut.u_cpu.u_btb.cur_epoch) &&
+                      (m[BTB_TAG_W-1:0] == tg);
     end
   endfunction
 
@@ -462,7 +465,9 @@ module tb_sw;
              n_pred_is_ret, n_ras_diff);
     n_ret_entries = 32'd0;
     for (bi = 0; bi < BTB_N; bi = bi + 1)
-      if (u_dut.u_cpu.u_btb.valid_arr[bi] && u_dut.u_cpu.u_btb.meta_ram[bi][BTB_META_W-2])
+      if (!u_dut.u_cpu.u_btb.scrubbing &&
+          (u_dut.u_cpu.u_btb.meta_ram[bi][BTB_META_W-1 : BTB_TAG_W+2] == u_dut.u_cpu.u_btb.cur_epoch) &&
+          u_dut.u_cpu.u_btb.meta_ram[bi][BTB_TAG_W])
         n_ret_entries = n_ret_entries + 32'd1;
     $display("  BTB 中 is_ret=1 的表项 = %0d", n_ret_entries);
 `endif

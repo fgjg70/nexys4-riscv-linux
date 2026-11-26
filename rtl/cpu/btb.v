@@ -2,23 +2,26 @@
 `include "rv32_defs.vh"
 
 // ============================================================================
-// btb.v — 128 项分布式 RAM 全 32-bit Tag BTB + Bimodal BHT (纯 Verilog-2001)
+// btb.v — 128 项分布式 RAM 8-bit Epoch 全 32-bit Tag BTB + Bimodal BHT (纯 Verilog-2001)
 // ----------------------------------------------------------------------------
-// Round 3 架构升级:
-//   1) 128 项 (RAM128X1D 甜点上限) 分布式 RAM 异步组合读:
-//        * 直接由寄存后的 pc (0.46ns FF) 寻址，彻底斩断 BTB BRAM -> pc_next -> BTB BRAM 闭环；
-//        * 省下 2 块 RAMB18E1 (含 BHT 共省 1.5 块 BRAM36 Tile)；
-//   2) 128-bit valid_arr FF 向量:
-//        * rst / flush_all (FENCE.I / SFENCE.VMA) 单拍全清，彻底消灭原 512 拍后台擦除盲区；
-//   3) Taken-Only 分配策略 (upd_en && upd_taken):
-//        * 不为从不跳转的条件分支浪费 BTB 槽位，等效容量提升 ~1.7x-2.0x (~220+ 项)。
+// 架构要点:
+//   1) 128 项 (2×RAM64M) 分布式 RAM 异步组合读，直接由寄存后的 pc 寻址；
+//   2) 8-bit Epoch 替代 128-bit valid_arr FF 向量:
+//        * epoch=0 保留为非法态，cur_epoch 复位为 1，常规 flush_all 单拍 cur_epoch+1
+//          (消灭 128 个 valid FF、128:1 读 MUX 与 flush_all 128 扇出布线浪费)；
+//        * 仅在每 255 次 flush_all 回绕时触发一次 128 拍后台清零 (scrubbing)，
+//          常态 254 次 flush 与 valid_arr 逐拍 100% 等价 (零预测率/IPC 损失)，
+//          回绕时 100% 根除跨代伪命中；
+//        * {p_epoch, p_tag} == {cur_epoch, ptag} 31-bit 并入单条 3 级 CARRY4 比较链；
+//   3) Taken-Only 分配策略 (upd_en && upd_taken)，等效容量 ~220+ 项。
 // ============================================================================
 
 module btb #(
-  parameter        IDX_BITS = 7,
-  parameter        PC_TOP   = 32,
-  parameter [31:0] PC_BASE  = `IMEM_BASE,
-  parameter        PHT_BITS = 13
+  parameter        IDX_BITS   = 7,
+  parameter        PC_TOP     = 32,
+  parameter [31:0] PC_BASE    = `IMEM_BASE,
+  parameter        PHT_BITS   = 13,
+  parameter        EPOCH_BITS = 8
 )(
   input  wire        clk,
   input  wire        rst,
@@ -47,9 +50,15 @@ module btb #(
   localparam N        = (1 << IDX_BITS);
   localparam TAG_BITS = PC_TOP - IDX_BITS - 2;
   localparam TGT_BITS = PC_TOP - 2;
-  localparam META_W   = TAG_BITS + 2; // {is_cond, is_ret, tag}
+  localparam META_W   = EPOCH_BITS + 2 + TAG_BITS; // {epoch, is_cond, is_ret, tag}
+  localparam [EPOCH_BITS-1:0] EPOCH_ONE = {{(EPOCH_BITS-1){1'b0}}, 1'b1};
+  localparam [EPOCH_BITS-1:0] EPOCH_MAX = {EPOCH_BITS{1'b1}};
+  localparam [IDX_BITS-1:0]   IDX_MAX   = {IDX_BITS{1'b1}};
 
-  reg  [N-1:0]                      valid_arr;
+  reg  [EPOCH_BITS-1:0] cur_epoch;
+  reg                   scrubbing;
+  reg  [IDX_BITS-1:0]   scrub_cnt;
+
   (* ram_style = "distributed" *) reg [META_W-1:0]   meta_ram [0:N-1];
   (* ram_style = "distributed" *) reg [TGT_BITS-1:0] tgt_ram  [0:N-1];
 
@@ -74,16 +83,15 @@ module btb #(
     .upd_old_ctr  (upd_old_ctr)
   );
 
-  wire                p_vld     = valid_arr[pidx];
-  wire [META_W-1:0]   p_meta    = meta_ram[pidx];
-  wire [TGT_BITS-1:0] p_tgt     = tgt_ram[pidx];
-  wire                p_is_cond = p_meta[META_W-1];
-  wire                p_is_ret  = p_meta[META_W-2];
-  wire [TAG_BITS-1:0] p_tag     = p_meta[TAG_BITS-1:0];
+  wire [META_W-1:0]     p_meta    = meta_ram[pidx];
+  wire [TGT_BITS-1:0]   p_tgt     = tgt_ram[pidx];
+  wire [EPOCH_BITS-1:0] p_epoch   = p_meta[META_W-1 : TAG_BITS+2];
+  wire                  p_is_cond = p_meta[TAG_BITS+1];
+  wire                  p_is_ret  = p_meta[TAG_BITS];
+  wire [TAG_BITS-1:0]   p_tag     = p_meta[TAG_BITS-1:0];
 
-  // pred_is_ret 直出 p_is_ret (不串联 23-bit Tag 比较 pred_hit)，使 RAS/BTB 目标选择与
-  // Tag 比较并行完成；pred_target 仅在 pred_taken=1 (已含 pred_hit) 时被 pc_next 采纳
-  assign pred_hit    = p_vld && (p_tag == ptag);
+  // {p_epoch, p_tag} == {cur_epoch, ptag} 单条 3-CARRY4 比较链; pred_is_ret 并行直出
+  assign pred_hit    = !scrubbing && ({p_epoch, p_tag} == {cur_epoch, ptag});
   assign pred_is_ret = p_is_ret;
   assign pred_taken  = pred_hit && (p_is_cond ? pred_ctr[1] : 1'b1);
 
@@ -95,38 +103,63 @@ module btb #(
     end
   endgenerate
 
-  // Taken-Only 分配: 仅实际发生跳转时写入 BTB，不为从不跳转的分支浪费槽位
-  wire btb_alloc = !flush_all && upd_en && upd_taken;
+  // Taken-Only 分配 (回绕清零期间让出写口给后台擦除器; 拆扇出避免 33-bit RAMD64E WE 拥塞)
+  wire                btb_en_ok = !rst && !flush_all && upd_en;
+  wire                btb_alloc = !scrubbing && btb_en_ok && upd_taken;
+  (* max_fanout = 12 *) wire meta_we = (!rst && scrubbing) || (btb_en_ok && upd_taken);
+  wire [IDX_BITS-1:0] meta_widx = scrubbing ? scrub_cnt : uidx;
+  wire [META_W-1:0]   meta_wdat = scrubbing
+                                  ? {META_W{1'b0}}
+                                  : {cur_epoch, upd_is_cond, upd_is_ret, utag};
 
   integer i;
   initial begin
-    valid_arr = {N{1'b0}};
+    cur_epoch = EPOCH_ONE;
+    scrubbing = 1'b0;
+    scrub_cnt = {IDX_BITS{1'b0}};
     for (i = 0; i < N; i = i + 1) begin
       meta_ram[i] = {META_W{1'b0}};
       tgt_ram[i]  = {TGT_BITS{1'b0}};
     end
 `ifndef SYNTHESIS
-    $display("[btb] LUTRAM BTB + 8K-BRAM BIMODAL TAKEN-ONLY ACTIVE: BTB=%0d (IDX=%0d TAG=%0d PC_TOP=%0d) PHT=%0d",
-             N, IDX_BITS, TAG_BITS, PC_TOP, (1 << PHT_BITS));
+    $display("[btb] LUTRAM %0d-BIT EPOCH BTB + 8K-BRAM BIMODAL TAKEN-ONLY ACTIVE: BTB=%0d (IDX=%0d TAG=%0d PC_TOP=%0d) PHT=%0d",
+             EPOCH_BITS, N, IDX_BITS, TAG_BITS, PC_TOP, (1 << PHT_BITS));
 `endif
   end
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
-      valid_arr <= {N{1'b0}};
+      cur_epoch <= EPOCH_ONE;
+      scrubbing <= 1'b0;
+      scrub_cnt <= {IDX_BITS{1'b0}};
+    end
+    else if (scrubbing) begin
+      if (scrub_cnt == IDX_MAX) begin
+        scrubbing <= 1'b0;
+        scrub_cnt <= {IDX_BITS{1'b0}};
+      end
+      else begin
+        scrub_cnt <= scrub_cnt + {{(IDX_BITS-1){1'b0}}, 1'b1};
+      end
     end
     else if (flush_all) begin
-      valid_arr <= {N{1'b0}};
-    end
-    else if (btb_alloc) begin
-      valid_arr[uidx] <= 1'b1;
+      if (cur_epoch == EPOCH_MAX) begin
+        cur_epoch <= EPOCH_ONE;
+        scrubbing <= 1'b1;
+        scrub_cnt <= {IDX_BITS{1'b0}};
+      end
+      else begin
+        cur_epoch <= cur_epoch + EPOCH_ONE;
+      end
     end
   end
 
   always @(posedge clk) begin
+    if (meta_we) begin
+      meta_ram[meta_widx] <= meta_wdat;
+    end
     if (!rst && btb_alloc) begin
-      meta_ram[uidx] <= {upd_is_cond, upd_is_ret, utag};
-      tgt_ram[uidx]  <= upd_target[PC_TOP-1:2];
+      tgt_ram[uidx] <= upd_target[PC_TOP-1:2];
     end
   end
 

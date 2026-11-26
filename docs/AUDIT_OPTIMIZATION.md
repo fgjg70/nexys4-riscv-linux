@@ -175,7 +175,8 @@
 | `ooc_sv32_v2` | Cut #1：`sv32_mmu` 主 TLB 写使能 `fill_itlb_en`/`fill_dtlb_en` 彻底脱离 `ibus_kill`/`satp_flush`；`rv32_cpu` CSR/xRET/exc 改用 `!lsu_stall` 摆脱 `muldiv -> hold_mem`；`csr_exists` 3 级并行分段 | — | — | 9.0 | -2.001 ns | -559.9 ns (-82.8%) |
 | `ooc_sv32_v3` | Cut #2：`dcache` 新增 `S_PTW_LK` 态使 `lk_pa`/`lk_idx` 纯 FF 选通（斩断 `amo_wait -> in_req -> ptw_accept -> tag_ram` ~5.0 ns）；`csr_file` 增寄存态 `i_xlate_en_r` + `icache` Bare/Sv32 并行 CARRY4 比较器 | 10,384 | 5,992 | 9.0 | -1.211 ns | -214.3 ns |
 | `ooc_sv32_v4` | Cut #3：`icache` 将 `tag[20]` 有效位并入 21b/11b CARRY4 折叠 `q_way0/1` 为单级 LUT6；`rv32_cpu` `id_is_sys_opc` 缩减为 5-bit `if_instr[6:2]`；主 ITLB/DTLB 定型为 1 uTLB + 8 全相联主 TLB（4 向布线拥塞全部清零） | 9,296 | 5,249 | 9.0 | -0.906 ns | -83.2 ns |
-| **`ooc_sv32_v5` (签核)** | **Cut #4：`rv32_cpu` 将 `ex_illegal`（含 `csr_exists`/`csr_illegal`/`priv_illegal`）全部经已有 1 拍精确寄存陷阱 `ex_pend_trap_r` 交付并同步清零 `u_ex_mem` 控制字、`satp_we_taken` 脱离 `csr_exists` 链** | **9,054 (14.28%)** | **5,255 (4.14%)** | **9.0 (6.67%)** | **`+0.043 ns` (100.43 MHz)** | **`0.000 ns` (`0 / 14,301`)** |
+| `ooc_sv32_v5` | Cut #4：`rv32_cpu` 将 `ex_illegal` 全部经 1 拍 `ex_pend_trap_r` 交付、`satp_we_taken` 脱离 `csr_exists` 链 | 9,054 (14.28%) | 5,255 (4.14%) | 9.0 (6.67%) | `+0.043 ns` (100.43 MHz) | `0.000 ns` (`0 / 14,301`) |
+| **`ooc_epoch_btb_v6` (终版)** | **8-bit Epoch 分布式 RAM BTB（消除 128b `valid_arr` FF + 128:1 MUX + 255 次回绕清零）+ `ex_mem.needs_split` 2-bit 预寄存 + `pc_hold_sel` 跳过冗余 `id_en` + `irq_to_s` 纯 FF 委托** | **8,887 (14.02%)**（**-167 LUT**） | **5,144 (4.06%)**（**-111 FF**） | **9.0 (6.67%)** | **`+0.040 ns` (100.40 MHz)** | **`0.000 ns` (`0 / 14,361`)，0 拥塞热点，纵向布线 -17%** |
 | **全芯片 Linux 比特流 (`top_nexys4_ddr`)** | **真实 `clk_wiz_0` + `mig_7series_0` (128 MB DDR2) + Sv32 MMU + `bootrom_linux.hex`（`SPIx4` `.bit`/`.bin`）** | **12,527 (19.76%)** | **8,869 (6.99%)** | **13.5 (10.00%)** | **`+0.170 ns` (101.73 MHz)** | **`0.000 ns` (`0 / 30,275`, `WHS = +0.032 ns`)** |
 
 ### 第五轮回归与功能签核清单

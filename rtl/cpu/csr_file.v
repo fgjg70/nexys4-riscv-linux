@@ -375,15 +375,14 @@ module csr_file #(
                    :              {1'b1, `IRQ_STIP};
 
   // --------------------------------------------------------------------------
-  // 陷阱委托与向量化入口计算 (预计算 irq 向量避开 exc_req 关键路径)
+  // 陷阱委托与向量化入口计算 (预计算 irq 委托与向量，避开 trap_cause[3:0] 关键路径)
   // --------------------------------------------------------------------------
-  wire trap_irq_deleg =
-      ((trap_cause[3:0] == `IRQ_SSIP) && mideleg[BIT_SSIP]) ||
-      ((trap_cause[3:0] == `IRQ_STIP) && mideleg[BIT_STIP]) ||
-      ((trap_cause[3:0] == `IRQ_SEIP) && mideleg[BIT_SEIP]);
+  wire irq_to_m = take_mei_m || take_msi_m || take_mti_m ||
+                  take_sei_m || take_ssi_m || take_sti_m;
+  wire irq_to_s = !irq_to_m && (take_sei_s || take_ssi_s || take_sti_s);
 
   wire trap_deleg = su_en && (priv_eff != `PRIV_M) &&
-                    (trap_cause[4] ? trap_irq_deleg : medeleg[trap_cause[3:0]]);
+                    (trap_cause[4] ? irq_to_s : medeleg[trap_cause[3:0]]);
 
   wire [31:0] mtvec_base = {mtvec[31:2], 2'b00};
   wire [31:0] m_irq_vec  = mtvec_base + {26'b0, irq_cause[3:0], 2'b00};

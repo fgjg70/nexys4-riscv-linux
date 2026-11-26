@@ -168,6 +168,39 @@ module tb_units;
     .pc(pc_pc), .pc_plus4(pc_plus4)
   );
 
+  // --------------------------------------------------------------------------
+  // DUT: btb (8-bit Epoch + 回绕后台清零自检)
+  // --------------------------------------------------------------------------
+  reg         btb_rst, btb_flush_all, btb_pred_en;
+  reg  [31:0] btb_pred_pc, btb_pred_pc_next;
+  wire        btb_pred_hit, btb_pred_taken, btb_pred_is_ret;
+  wire [31:0] btb_pred_target;
+  wire [1:0]  btb_pred_ctr;
+  reg         btb_upd_en, btb_upd_taken, btb_upd_is_ret, btb_upd_is_cond;
+  reg  [31:0] btb_upd_pc, btb_upd_target;
+  reg  [1:0]  btb_upd_old_ctr;
+
+  btb #(.IDX_BITS(7), .PC_TOP(32), .PHT_BITS(13), .EPOCH_BITS(8)) u_btb_ut (
+    .clk          (clk),
+    .rst          (btb_rst),
+    .flush_all    (btb_flush_all),
+    .pred_pc      (btb_pred_pc),
+    .pred_en      (btb_pred_en),
+    .pred_pc_next (btb_pred_pc_next),
+    .pred_hit     (btb_pred_hit),
+    .pred_taken   (btb_pred_taken),
+    .pred_target  (btb_pred_target),
+    .pred_is_ret  (btb_pred_is_ret),
+    .pred_ctr     (btb_pred_ctr),
+    .upd_en       (btb_upd_en),
+    .upd_pc       (btb_upd_pc),
+    .upd_taken    (btb_upd_taken),
+    .upd_target   (btb_upd_target),
+    .upd_is_ret   (btb_upd_is_ret),
+    .upd_is_cond  (btb_upd_is_cond),
+    .upd_old_ctr  (btb_upd_old_ctr)
+  );
+
   // ==========================================================================
   // 测试主体
   // ==========================================================================
@@ -561,6 +594,66 @@ module tb_units;
     @(posedge clk); #1; chk(pc_pc, 32'h0000_0300, "flush 优先于 stall");
     pc_flush = 1'b0; pc_stall = 1'b0;
     @(posedge clk); #1; chk(pc_pc, 32'h0000_0304, "恢复顺序执行");
+
+    // ------------------------------------------------------------------
+    $display("[7/7] btb (8-bit epoch + 255-flush wraparound scrub) ...");
+    btb_rst = 1'b1; btb_flush_all = 1'b0; btb_pred_en = 1'b1;
+    btb_pred_pc = 32'h8000_0100; btb_pred_pc_next = 32'h8000_0100;
+    btb_upd_en = 1'b0; btb_upd_pc = 32'd0; btb_upd_taken = 1'b0;
+    btb_upd_target = 32'd0; btb_upd_is_ret = 1'b0; btb_upd_is_cond = 1'b0;
+    btb_upd_old_ctr = 2'b10;
+    @(posedge clk); #1;
+    btb_rst = 1'b0; #1;
+    chk({31'd0, btb_pred_hit}, 32'd0, "btb 冷复位未命中");
+    chk({24'd0, u_btb_ut.cur_epoch}, 32'd1, "btb 初始 epoch=1");
+
+    // Epoch 1 写入表项 A
+    @(negedge clk);
+    btb_upd_en = 1'b1; btb_upd_pc = 32'h8000_0100; btb_upd_taken = 1'b1;
+    btb_upd_target = 32'h8000_0200; btb_upd_is_cond = 1'b0; btb_upd_is_ret = 1'b0;
+    @(posedge clk); #1;
+    btb_upd_en = 1'b0; btb_pred_pc = 32'h8000_0100; #1;
+    chk({31'd0, btb_pred_hit}, 32'd1, "btb epoch=1 命中表项 A");
+    chk(btb_pred_target, 32'h8000_0200, "btb 表项 A 目标正确");
+
+    // 第 1 次 flush_all -> 1 拍切到 epoch=2，表项 A 立即失效
+    @(negedge clk); btb_flush_all = 1'b1;
+    @(posedge clk); #1; btb_flush_all = 1'b0; #1;
+    chk({24'd0, u_btb_ut.cur_epoch}, 32'd2, "btb 1次 flush -> epoch=2");
+    chk({31'd0, btb_pred_hit}, 32'd0, "btb epoch=2 旧表项 A 立即失效");
+
+    // 连续再发 253 次 flush_all -> 抵达 epoch=255 (8'hFF)，期间零清零盲区
+    for (i = 0; i < 253; i = i + 1) begin
+      @(negedge clk); btb_flush_all = 1'b1;
+      @(posedge clk); #1;
+    end
+    btb_flush_all = 1'b0; #1;
+    chk({24'd0, u_btb_ut.cur_epoch}, 32'd255, "btb 254次 flush -> epoch=255");
+    chk({31'd0, u_btb_ut.scrubbing}, 32'd0, "btb epoch=255 未触发 scrub");
+
+    // 第 255 次 flush_all -> 触发回绕并自动启动 128 拍后台清零
+    @(negedge clk); btb_flush_all = 1'b1;
+    @(posedge clk); #1; btb_flush_all = 1'b0; #1;
+    chk({24'd0, u_btb_ut.cur_epoch}, 32'd1, "btb 第255次 flush 回绕至 epoch=1");
+    chk({31'd0, u_btb_ut.scrubbing}, 32'd1, "btb 回绕启动后台清零");
+    chk({31'd0, btb_pred_hit}, 32'd0, "btb 清零期间屏蔽预测");
+
+    // 走满 128 拍完成整表清零，确认原 epoch=1 的旧表项 A 彻底消失 (零跨代伪命中!)
+    for (i = 0; i < 128; i = i + 1) begin
+      @(posedge clk); #1;
+    end
+    chk({31'd0, u_btb_ut.scrubbing}, 32'd0, "btb 128拍后退出清零");
+    btb_pred_pc = 32'h8000_0100; #1;
+    chk({31'd0, btb_pred_hit}, 32'd0, "btb 回绕清零后原 epoch=1 旧表项 A 绝不伪命中");
+
+    // 清零完成后立即恢复正常分配与命中
+    @(negedge clk);
+    btb_upd_en = 1'b1; btb_upd_pc = 32'h8000_0100; btb_upd_taken = 1'b1;
+    btb_upd_target = 32'h8000_0500;
+    @(posedge clk); #1;
+    btb_upd_en = 1'b0; btb_pred_pc = 32'h8000_0100; #1;
+    chk({31'd0, btb_pred_hit}, 32'd1, "btb 清零后新表项正常命中");
+    chk(btb_pred_target, 32'h8000_0500, "btb 新表项目标正确");
 
     // ------------------------------------------------------------------
     $display("=================================================");

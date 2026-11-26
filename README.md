@@ -37,8 +37,8 @@ digital/
 | 指标 | 实测占用 / 结果（Phase D+C：M/S/U + Sv32 MMU + 100 MHz + Linux BootROM） | 占比 / 裕量与对比 |
 |---|---|---|
 | **特权级与 MMU** | **M/S/U 三态 + `medeleg`/`mideleg` + S-CSR + PLIC Context 1**；**Sv32 MMU**（双侧 1 项微 TLB + 8 项全相联主 TLB，支持 4 KB/4 MB 巨页 + D-Cache 脏行一致性硬件 PTW + `SFENCE.VMA` + 物理标签 VIPT I$/D$/L0D） | `tb_linux_soc` (`soc_test.hex`) 保持 **`85,497` 周期（0 Bare-mode IPC 退化）**；`tb_soc_priv_s` `3,351` 周期、`tb_soc_sv32` `33,980` 周期全通过 |
-| **OOC `rv32_soc` 资源** | **`9,054` LUT**（含 570 LUTRAM）/ **`5,255` FF（0 Latch）** / **`9.0` BRAM Tile** / **`4` DSP48E1** | LUT **14.28%** / FF **4.14%** / BRAM **6.67%**（**Sv32 零新增 BRAM**）/ DSP **1.67%** |
-| **OOC `sys_clk` 主频** | **`100.43 MHz`**（**`WNS = +0.043 ns`，`TNS = 0.000 ns`，`0 / 14,301` 违例，`WHS = +0.080 ns`**） | 默认 `opt/place/route` 一次达标 100 MHz；`cam_pclk` +15.038 ns / `vga_clk` +35.644 ns |
+| **OOC `rv32_soc` 资源** | **`8,887` LUT**（含 590 LUTRAM）/ **`5,144` FF（0 Latch）** / **`9.0` BRAM Tile** / **`4` DSP48E1**（含 8-bit Epoch 分布式 RAM BTB） | LUT **14.02%**（较 `valid_arr` 再省 **-167 LUT / -111 FF**） / FF **4.06%** / BRAM **6.67%** / DSP **1.67%** |
+| **OOC `sys_clk` 主频** | **`100.40 MHz`**（**`WNS = +0.040 ns`，`TNS = 0.000 ns`，`0 / 14,361` 违例，`WHS = +0.017 ns`**） | 默认 `opt/place/route` 一次达标 100 MHz，0 拥塞热点；`cam_pclk` +14.911 ns / `vga_clk` +35.833 ns |
 | **全芯片 Linux 比特流 (`top_nexys4_ddr`)** | 含真实 `clk_wiz_0` + `mig_7series_0` (128 MB DDR2) + Sv32 MMU + `bootrom_linux.hex`：**`12,527` LUT (19.76%) / `8,869` FF (6.99%, 0 Latch) / `13.5` BRAM (10.00%) / `4` DSP** | **`WNS = +0.170 ns` (`clk_100m` 101.73 MHz, `0 / 30,275` 违例), `WHS = +0.032 ns` (`0 / 30,274`), `ui_clk` +4.553 ns, `0 DRC Errors`**, 已签核 `.bit` + QSPI `SPIx4` `.bin` |
 | **Linux 引导软件栈** | 16 KB `bootrom_linux.hex`（SDHC/SDSC `NX4L` + USB-UART `NX4U` + RISC-V Linux ABI `a0=0, a1=dtb`）+ Sv32/nommu DTS + OpenSBI/Linux/Buildroot 构建脚本 | `tb_bootrom_linux` 真实 SPI Mode 0 SDHC 行为卡端到端引导仿真通过；详见 [sw/linux/README.md](sw/linux/README.md) |
 
