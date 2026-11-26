@@ -17,7 +17,7 @@
 module rv32_cpu #(
   parameter [31:0] RESET_PC    = `PC_RESET,
   parameter [31:0] MTVEC_RESET = 32'h8000_0100,
-  parameter        BTB_IDX_BITS = 9,
+  parameter        BTB_IDX_BITS = 7,
   parameter        BTB_PC_TOP   = 32
 )(
   input  wire        clk,
@@ -40,6 +40,11 @@ module rv32_cpu #(
   input  wire [31:0] dbus_rdata,
   input  wire        dbus_stall,
   input  wire        dbus_fault,
+  // L0D 0 拍异步快读口 (dbus_l0_addr 直连 ex_mem_alu_out FF，跳过 LSU mux; 无 L0D 时 fast_hit 恒接 0)
+  output wire        dbus_l0_en,
+  output wire [31:0] dbus_l0_addr,
+  input  wire        dbus_fast_hit,
+  input  wire [31:0] dbus_fast_rdata,
 
   // FENCE.I 缓存同步握手 (无 Cache 时 fencei_done 直接恒接 1'b1)
   output wire        fencei_req,
@@ -85,17 +90,18 @@ module rv32_cpu #(
   wire        pred_hit, pred_taken, btb_upd_en, is_ctrl_flow;
   wire [31:0] pred_target, actual_target;
   wire        pred_is_ret;
+  wire [1:0]  pred_ctr;
   wire        ex_is_call, ex_is_ret, ex_is_cond;
   (* max_fanout = 16 *) wire actual_taken;
   wire        pred_ok;
   wire [31:0] btb_pred_target;
-  wire [15:0] btb_align_err;
   wire        btb_flush_all;
 
   // IF/ID
   wire [31:0] if_pc, if_pc_plus4, if_instr;
   wire        if_pred_taken;
   wire [31:0] if_pred_target;
+  wire [1:0]  if_pred_ctr;
   wire        if_fault;
 
   // ID
@@ -115,6 +121,7 @@ module rv32_cpu #(
   wire [4:0]         id_ex_rs1, id_ex_rs2, id_ex_rd;
   wire               id_ex_pred_taken;
   wire [31:0]        id_ex_pred_target;
+  wire [1:0]         id_ex_pred_ctr;
   reg  [31:0]        id_ex_jr_p;
 
   // EX
@@ -145,7 +152,7 @@ module rv32_cpu #(
   wire [3:0]  exc_cause;
   wire [31:0] trap_vector, mret_pc, trap_tval;
   wire        irq_pending, mret_taken, is_mret;
-  wire        insn_misalign;
+  wire        insn_misalign_fast, br_misalign_cond, insn_misalign;
 
   // EX/MEM
   wire               ex_mem_valid;
@@ -156,12 +163,15 @@ module rv32_cpu #(
 
   // MEM
   wire [31:0] mem_load_data;
+  wire        mem_fast_load;
+  wire [31:0] mem_fast_load_data;
 
   // MEM/WB
   wire               mem_wb_valid;
   wire [31:0]        mem_wb_pc;
   wire [`CTRL_W-1:0] mem_wb_ctrl;
   wire [31:0]        mem_wb_alu_out, mem_wb_load_data, mem_wb_pc_plus4;
+  wire               mem_wb_fast_load;
   wire [4:0]         mem_wb_rd;
   (* max_fanout = 16 *) wire [1:0] mem_wb_wb_src = mem_wb_ctrl[`CTRL_WB_SRC];
   wire               wb_is_mem;
@@ -179,7 +189,9 @@ module rv32_cpu #(
   wire        instret_inc;
 
   // 流水线控制
-  wire        pipe_stall, if_id_flush, hold_mem;
+  (* max_fanout = 32 *) wire pipe_stall;
+  wire        stall_no_l0, load_use_mem_hit;
+  wire        if_id_flush, hold_mem;
   wire        br_redir, br_redir_eff;
   reg         br_redir_r;
   wire        redir_flush, pc_flush;
@@ -193,25 +205,27 @@ module rv32_cpu #(
   // ==========================================================================
   // IF 段 (支持 1 拍命中 + 多拍 I-Cache 缺失 + 无竞态重定向取消)
   // ==========================================================================
-  wire fetch_hold;
   wire boot_done;
 `ifdef IMEM_COMB_READ
-  assign boot_done  = 1'b1;
-  assign fetch_hold = pipe_stall || !ibus_valid;
+  assign boot_done = 1'b1;
 `else
   reg boot_done_r;
   always @(posedge clk or posedge rst) begin
     if (rst) boot_done_r <= 1'b0;
     else     boot_done_r <= 1'b1;
   end
-  assign boot_done  = boot_done_r;
-  assign fetch_hold = pipe_stall || !boot_done || !ibus_valid;
+  assign boot_done = boot_done_r;
 `endif
+
+  // Round 3 时序优化: pc_hold_sel 合并 fetch_hold && !pc_flush 供 u_pc.stall 与 pc_next 共用
+  // (u_pc 内部 flush 优先级高于 stall，功能完全等价，将 LUT5+LUT3 压缩为单级 LUT6)
+  (* max_fanout = 16 *) wire pc_hold_sel =
+      (stall_no_l0 || !boot_done || !ibus_valid || (load_use_mem_hit && !mem_fast_load)) && !pc_flush;
 
   pc #(.XLEN(XLEN), .RESET_PC(RESET_PC)) u_pc (
     .clk       (clk),
     .rst       (rst),
-    .stall     (fetch_hold),
+    .stall     (pc_hold_sel),
     .flush     (pc_flush),
     .flush_pc  (pc_flush_pc),
     .pc_src    (pc_src),
@@ -220,9 +234,9 @@ module rv32_cpu #(
     .pc_plus4  (pc_plus4)
   );
 
-  wire [31:0] pc_next = pc_flush   ? pc_flush_pc
-                      : fetch_hold ? pc
-                      : (pc_src ? pc_target : pc_plus4);
+  wire [31:0] pc_seq_pred = pc_src ? pc_target : pc_plus4;
+  wire [31:0] pc_adv      = pc_flush ? pc_flush_pc : pc_seq_pred;
+  wire [31:0] pc_next     = pc_hold_sel ? pc : pc_adv;
 
   assign ibus_req  = !rst;
 `ifdef IMEM_COMB_READ
@@ -232,57 +246,60 @@ module rv32_cpu #(
 `endif
   assign ibus_kill = pc_flush;
 
-  wire [31:0] p2_pc_ns = pc_flush ? pc_flush_pc : (pc_src ? pc_target : pc_plus4);
-  wire        p2_hold  = fetch_hold && !pc_flush;
-
   assign if_id_flush = any_redir;
 
   // ==========================================================================
-  // 分支预测 (全 32 位两级流水 gshare BTB + 1 拍 flush_all)
+  // 分支预测 (Round 4: 128 项分布式 RAM Taken-Only BTB + 8K RAMB18E1 Bimodal + 默认 16 项 RAS)
   // ==========================================================================
   assign btb_flush_all = fencei_taken;
+
+  wire        bht_pred_en      = rst || !pc_hold_sel;
+  wire [31:0] bht_pred_pc_next = rst ? RESET_PC : pc_next;
 
   btb #(
     .IDX_BITS (BTB_IDX_BITS),
     .PC_TOP   (BTB_PC_TOP),
-    .PC_BASE  (RESET_PC)
+    .PC_BASE  (RESET_PC),
+    .PHT_BITS (13)
   ) u_btb (
-    .clk           (clk),
-    .rst           (rst),
-    .flush_all     (btb_flush_all),
-    .pred_pc       (32'd0),
-    .pred_hit      (),
-    .pred_taken    (),
-    .pred_target   (),
-    .pred_is_ret   (),
-    .p2_pc         (p2_pc_ns),
-    .p2_hold       (p2_hold),
-    .p2_pc_pht     (pc_next),
-    .q_hit         (pred_hit),
-    .q_taken       (pred_taken),
-    .q_target      (btb_pred_target),
-    .q_is_ret      (pred_is_ret),
-    .upd_en        (btb_upd_en),
-    .upd_pc        (id_ex_pc),
-    .upd_taken     (actual_taken),
-    .upd_target    (ex_pc_target),
-    .upd_is_ret    (ex_is_ret),
-    .upd_is_cond   (ex_is_cond),
-    .align_err_cnt (btb_align_err)
+    .clk          (clk),
+    .rst          (rst),
+    .flush_all    (btb_flush_all),
+    .pred_pc      (pc),
+    .pred_en      (bht_pred_en),
+    .pred_pc_next (bht_pred_pc_next),
+    .pred_hit     (pred_hit),
+    .pred_taken   (pred_taken),
+    .pred_target  (btb_pred_target),
+    .pred_is_ret  (pred_is_ret),
+    .pred_ctr     (pred_ctr),
+    .upd_en       (btb_upd_en),
+    .upd_pc       (id_ex_pc),
+    .upd_taken    (actual_taken),
+    .upd_target   (ex_pc_target),
+    .upd_is_ret   (ex_is_ret),
+    .upd_is_cond  (ex_is_cond),
+    .upd_old_ctr  (id_ex_pred_ctr)
   );
 
   assign ex_is_cond = (id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR);
 
-`ifdef RAS_EN
+  // btb_upd_base 剥离条件分支专属的 br_misalign_cond，供 JAL/JALR 专属的 RAS push/pop 使用，
+  // 彻底剪断 32-bit branch_unit -> ex_taken -> u_ras 关键路径 (与 btb_upd_en 逻辑 100% 等价)
+  wire btb_upd_base = is_ctrl_flow && !hold_mem && !rst && !redir_kill && !any_bus_fault && !insn_misalign_fast;
+
+`ifndef RAS_DIS
   wire [31:0] ras_top;
   wire        ras_empty;
-  wire ex_is_call_w = btb_upd_en
-                   && ((id_ex_ctrl[`CTRL_PC_SEL] == `PC_J) || (id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR))
-                   && ((id_ex_rd == 5'd1) || (id_ex_rd == 5'd5));
-  wire ex_is_ret_w  = btb_upd_en
-                   && (id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR)
-                   && ((id_ex_rs1 == 5'd1) || (id_ex_rs1 == 5'd5))
-                   && (id_ex_rd == 5'd0);
+  // RISC-V Spec Table 2.1: call/ret 严格语义 (含 rd!=rs1 协程切换同时 pop+push)
+  wire ex_rd_link  = (id_ex_rd  == 5'd1) || (id_ex_rd  == 5'd5);
+  wire ex_rs1_link = (id_ex_rs1 == 5'd1) || (id_ex_rs1 == 5'd5);
+  wire ex_is_jal   = (id_ex_ctrl[`CTRL_PC_SEL] == `PC_J);
+  wire ex_is_jalr  = (id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR);
+
+  wire ex_is_call_w = btb_upd_base && ((ex_is_jal || ex_is_jalr) && ex_rd_link);
+  wire ex_is_ret_w  = btb_upd_base && ex_is_jalr && ex_rs1_link &&
+                      (!ex_rd_link || (id_ex_rd != id_ex_rs1));
   assign ex_is_call  = ex_is_call_w;
   assign ex_is_ret   = ex_is_ret_w;
 
@@ -305,13 +322,14 @@ module rv32_cpu #(
 `endif
 
   assign is_ctrl_flow = (id_ex_ctrl[`CTRL_PC_SEL] != `PC_NEXT);
-  assign btb_upd_en   = is_ctrl_flow && !hold_mem && !rst && !redir_kill && !any_bus_fault && !insn_misalign;
+  assign btb_upd_en   = btb_upd_base && !br_misalign_cond;
 
   assign if_pc          = pc;
   assign if_pc_plus4    = pc_plus4;
   assign if_instr       = ibus_rdata;
   assign if_pred_taken  = pred_taken;
   assign if_pred_target = pred_target;
+  assign if_pred_ctr    = pred_ctr;
   assign id_en          = boot_done && ibus_valid;
   assign if_fault       = id_en && ibus_fault;
 
@@ -374,6 +392,7 @@ module rv32_cpu #(
     .rd_addr_in     (id_rd),
     .pred_taken_in  (if_pred_taken),
     .pred_target_in (if_pred_target),
+    .pred_ctr_in    (if_pred_ctr),
     .ctrl           (id_ex_ctrl),
     .valid          (id_ex_valid),
     .if_fault       (id_ex_if_fault),
@@ -387,14 +406,15 @@ module rv32_cpu #(
     .rs2_addr       (id_ex_rs2),
     .rd_addr        (id_ex_rd),
     .pred_taken     (id_ex_pred_taken),
-    .pred_target    (id_ex_pred_target)
+    .pred_target    (id_ex_pred_target),
+    .pred_ctr       (id_ex_pred_ctr)
   );
 
   // ==========================================================================
-  // EX 段 (Round 2 全路径优化: WB_PC4 在 EX 段并入 ex_result，前递零 MUX 直通!)
+  // EX 段 (Round 2: WB_PC4 并入 ex_result; Round 3: L0D 命中由 mem_wb_load_data FF 直通前递!)
   // ==========================================================================
   wire [31:0] ex_mem_fwd_data = ex_mem_alu_out;
-  wire [31:0] fwd_wb_data     = mem_wb_alu_out;
+  wire [31:0] fwd_wb_data     = mem_wb_fast_load ? mem_wb_load_data : mem_wb_alu_out;
 
   always @(*) begin
     ex_rs1 = (id_ex_fwd_a == `FWD_EX_MEM) ? ex_mem_fwd_data :
@@ -512,9 +532,9 @@ module rv32_cpu #(
   // 彻底剪断 branch_unit 32 位进位链 -> trap_enter -> pc_flush -> ibus_addr -> I-Cache 关键路径
   wire [1:0] ex_jr_lo2          = ex_rs1[1:0] + id_ex_imm[1:0];
   wire       ex_bj_mis          = id_ex_pc[1] ^ id_ex_imm[1];
-  wire       insn_misalign_fast = ((id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR) && ex_jr_lo2[1]) ||
+  assign     insn_misalign_fast = ((id_ex_ctrl[`CTRL_PC_SEL] == `PC_JR) && ex_jr_lo2[1]) ||
                                   ((id_ex_ctrl[`CTRL_PC_SEL] == `PC_J)  && ex_bj_mis);
-  wire       br_misalign_cond   = (id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR) && ex_taken && ex_bj_mis;
+  assign     br_misalign_cond   = (id_ex_ctrl[`CTRL_PC_SEL] == `PC_BR) && ex_taken && ex_bj_mis;
   assign     insn_misalign      = insn_misalign_fast || br_misalign_cond;
 
   assign actual_target = actual_taken ? ex_pc_target : id_ex_pc_plus4;
@@ -553,10 +573,12 @@ module rv32_cpu #(
   assign wfi_stall = is_wfi && !wfi_wake;
 
   // WB 段与 MEM 多拍阶段总线访存故障 (最老指令优先: wb_fault > mem_fault > exc_req > irq_take)
+  // 接口契约: dcache 仅在 S_RESP (dbus_stall=0) 才可能置高 dbus_fault_r，省略冗余 !dbus_stall
+  // 彻底剪断 dbus_stall -> any_bus_fault(fo=167) -> trap_redir -> pc_next 关键路径
   assign wb_is_mem       = mem_wb_valid &&
                            (mem_wb_ctrl[`CTRL_MEM_READ] || mem_wb_ctrl[`CTRL_MEM_WRITE] || mem_wb_ctrl[`CTRL_AMO_EN]);
-  assign mem_fault       = dbus_fault && !dbus_stall && lsu_mem_resp && ex_mem_valid;
-  assign wb_fault        = dbus_fault && !dbus_stall && !lsu_mem_resp && wb_is_mem;
+  assign mem_fault       = dbus_fault && lsu_mem_resp && ex_mem_valid;
+  assign wb_fault        = dbus_fault && !lsu_mem_resp && wb_is_mem;
   assign wb_fault_cause  = (mem_wb_ctrl[`CTRL_MEM_READ] ||
                             (mem_wb_ctrl[`CTRL_AMO_EN] && (mem_wb_ctrl[`CTRL_AMO_OP] == `AMO_LR)))
                            ? `CAUSE_LOAD_ACCESS : `CAUSE_STORE_ACCESS;
@@ -730,6 +752,7 @@ module rv32_cpu #(
     .id_ex_rd         (redir_kill ? 5'd0 : id_ex_rd),
     .ex_mem_reg_write (ex_mem_ctrl[`CTRL_REG_WRITE]),
     .ex_mem_mem_read  (ex_mem_ctrl[`CTRL_MEM_READ] || ex_mem_ctrl[`CTRL_AMO_EN]),
+    .mem_fast_load    (mem_fast_load),
     .ex_mem_rd        (ex_mem_rd),
     .if_id_rs1        (id_rs1_haz),
     .if_id_rs2        (id_rs2_haz),
@@ -741,6 +764,8 @@ module rv32_cpu #(
     .fwd_a_pre        (fwd_a_pre),
     .fwd_b_pre        (fwd_b_pre),
     .pipe_stall       (pipe_stall),
+    .stall_no_l0      (stall_no_l0),
+    .load_use_mem_hit (load_use_mem_hit),
     .id_ex_bubble     (id_ex_bubble),
     .hold_mem         (hold_mem),
     .redirect         (redirect)
@@ -793,6 +818,8 @@ module rv32_cpu #(
   wire [31:0] amo_new_comb;
 `endif
 
+  assign dbus_l0_addr = ex_mem_alu_out;
+
   load_store_unit u_lsu (
     .clk             (clk),
     .rst             (rst),
@@ -810,7 +837,12 @@ module rv32_cpu #(
     .dmem_re         (dbus_re),
     .dmem_rdata      (dbus_rdata),
     .dbus_stall      (dbus_stall),
+    .dbus_l0_en      (dbus_l0_en),
+    .dbus_fast_hit   (dbus_fast_hit),
+    .dbus_fast_rdata (dbus_fast_rdata),
     .load_data       (mem_load_data),
+    .fast_load_hit   (mem_fast_load),
+    .fast_load_data  (mem_fast_load_data),
     .lsu_stall       (lsu_stall),
     .lsu_mem_resp    (lsu_mem_resp),
     .lsu_in_tail     (lsu_in_tail),
@@ -875,11 +907,8 @@ module rv32_cpu #(
     .pc_in        (ex_mem_pc),
     .ctrl_in      (ex_mem_ctrl),
     .alu_out_in   (ex_mem_alu_out),
-`ifdef LOAD_RESULT_REG
-    .load_data_in (mem_load_data),
-`else
-    .load_data_in (32'h0),
-`endif
+    .load_data_in (mem_fast_load ? mem_fast_load_data : 32'h0),
+    .fast_load_in (mem_fast_load),
     .pc_plus4_in  (ex_mem_pc_plus4),
     .rd_addr_in   (ex_mem_rd),
     .valid        (mem_wb_valid),
@@ -887,17 +916,14 @@ module rv32_cpu #(
     .ctrl         (mem_wb_ctrl),
     .alu_out      (mem_wb_alu_out),
     .load_data    (mem_wb_load_data),
+    .fast_load    (mem_wb_fast_load),
     .pc_plus4     (mem_wb_pc_plus4),
     .rd_addr      (mem_wb_rd)
   );
 
   always @(*) begin
     if (mem_wb_wb_src == `WB_MEM) begin
-`ifdef LOAD_RESULT_REG
-      wb_data = mem_wb_load_data;
-`else
-      wb_data = mem_load_data;
-`endif
+      wb_data = mem_wb_fast_load ? mem_wb_load_data : mem_load_data;
     end
     else begin
       wb_data = mem_wb_alu_out;

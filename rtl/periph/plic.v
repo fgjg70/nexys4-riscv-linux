@@ -41,21 +41,39 @@ module plic (
 
   wire [7:1] pending = irq_src & ~claimed;
 
-  // 组合仲裁: 在所有 pending & enable 且 prio > threshold 的中断源中，
-  // 选择优先级最高者 (同优先级时 ID 较小者胜出, 符合 RISC-V PLIC 规范)
-  reg [2:0] best_id;
-  reg [2:0] best_prio;
-  integer k;
-  always @(*) begin
-    best_id   = 3'd0;
-    best_prio = threshold;
-    for (k = 1; k <= 7; k = k + 1) begin
-      if (pending[k] && enable[k] && (prio[k] > best_prio)) begin
-        best_id   = k[2:0];
-        best_prio = prio[k];
-      end
-    end
-  end
+  // 3 级平衡二叉锦标赛树仲裁 (替代 7 级串行比较链，逻辑级数 15 -> 5):
+  // 在所有 pending & enable 且 prio > threshold 的中断源中选择优先级最高者 (同优先级 ID 较小者胜)
+  wire [2:0] cp1 = (pending[1] && enable[1] && (prio[1] > threshold)) ? prio[1] : 3'd0;
+  wire [2:0] cp2 = (pending[2] && enable[2] && (prio[2] > threshold)) ? prio[2] : 3'd0;
+  wire [2:0] cp3 = (pending[3] && enable[3] && (prio[3] > threshold)) ? prio[3] : 3'd0;
+  wire [2:0] cp4 = (pending[4] && enable[4] && (prio[4] > threshold)) ? prio[4] : 3'd0;
+  wire [2:0] cp5 = (pending[5] && enable[5] && (prio[5] > threshold)) ? prio[5] : 3'd0;
+  wire [2:0] cp6 = (pending[6] && enable[6] && (prio[6] > threshold)) ? prio[6] : 3'd0;
+  wire [2:0] cp7 = (pending[7] && enable[7] && (prio[7] > threshold)) ? prio[7] : 3'd0;
+
+  wire       w12  = (cp1 >= cp2);
+  wire [2:0] p12  = w12 ? cp1 : cp2;
+  wire [2:0] id12 = w12 ? ((cp1 != 3'd0) ? 3'd1 : 3'd0) : 3'd2;
+
+  wire       w34  = (cp3 >= cp4);
+  wire [2:0] p34  = w34 ? cp3 : cp4;
+  wire [2:0] id34 = w34 ? ((cp3 != 3'd0) ? 3'd3 : 3'd0) : 3'd4;
+
+  wire       w56  = (cp5 >= cp6);
+  wire [2:0] p56  = w56 ? cp5 : cp6;
+  wire [2:0] id56 = w56 ? ((cp5 != 3'd0) ? 3'd5 : 3'd0) : 3'd6;
+
+  wire [2:0] id7  = (cp7 != 3'd0) ? 3'd7 : 3'd0;
+
+  wire       w14  = (p12 >= p34);
+  wire [2:0] p14  = w14 ? p12 : p34;
+  wire [2:0] id14 = w14 ? id12 : id34;
+
+  wire       w57  = (p56 >= cp7);
+  wire [2:0] p57  = w57 ? p56 : cp7;
+  wire [2:0] id57 = w57 ? id56 : id7;
+
+  wire [2:0] best_id = (p14 >= p57) ? id14 : id57;
 
   wire [21:0] off    = addr[21:0];
   wire        do_req = req && !ack;

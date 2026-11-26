@@ -18,12 +18,12 @@ module tb_sw;
   localparam        LOG_MAX     = 4096;
 
   // BTB 几何常量 (纯 Verilog-2001 不允许在 localparam 中引用层次化参数,
-  // 在 boot 时与 u_dut.u_cpu.u_btb.IDX_BITS / PC_TOP 显式断言一致, 且逐拍与 q_hit 自证)
-  localparam BTB_IDX_BITS = 9;
+  // 在 boot 时与 u_dut.u_cpu.u_btb.IDX_BITS / PC_TOP 显式断言一致, 且逐拍与 pred_hit 自证)
+  localparam BTB_IDX_BITS = 7;
   localparam BTB_PC_TOP   = 32;
   localparam BTB_TAG_LSB  = BTB_IDX_BITS + 2;
   localparam BTB_TAG_W    = BTB_PC_TOP - BTB_TAG_LSB;
-  localparam BTB_META_W   = BTB_TAG_W + 3;
+  localparam BTB_META_W   = BTB_TAG_W + 2;
   localparam BTB_N        = (1 << BTB_IDX_BITS);
 
   localparam [31:0] MMIO_MARK_A   = `MMIO_MARK;
@@ -249,18 +249,14 @@ module tb_sw;
       idx = pc_in[BTB_IDX_BITS+1:2];
       tg  = pc_in[BTB_PC_TOP-1:BTB_TAG_LSB];
       m   = u_dut.u_cpu.u_btb.meta_ram[idx];
-      btb_has_entry = !u_dut.u_cpu.u_btb.scrubbing && m[BTB_META_W-1] && (m[BTB_TAG_W-1:0] == tg);
+      btb_has_entry = u_dut.u_cpu.u_btb.valid_arr[idx] && (m[BTB_TAG_W-1:0] == tg);
     end
   endfunction
 
   always @(posedge clk) begin
     if (!rst) begin
-      if (rep_hit_d !== u_dut.u_cpu.pred_hit)
+      if (btb_has_entry(u_dut.u_cpu.pc) !== u_dut.u_cpu.pred_hit)
         n_btb_rep_bad = n_btb_rep_bad + 32'd1;
-      if (u_dut.u_cpu.btb_flush_all || u_dut.u_cpu.u_btb.scrubbing)
-        rep_hit_d <= 1'b0;
-      else if (!u_dut.u_cpu.p2_hold)
-        rep_hit_d <= btb_has_entry(u_dut.u_cpu.p2_pc_ns);
     end
   end
 
@@ -308,11 +304,11 @@ module tb_sw;
       if (u_dut.u_cpu.ex_mem_ctrl[`CTRL_MEM_READ] && !u_dut.u_cpu.pipe_stall)
         n_load = n_load + 32'd1;
 
-`ifdef RAS_EN
+`ifndef RAS_DIS
       if (u_dut.u_cpu.ex_is_call)   n_ras_push     = n_ras_push + 32'd1;
       if (u_dut.u_cpu.ex_is_ret)    n_ras_pop      = n_ras_pop + 32'd1;
       if (!u_dut.u_cpu.u_ras.empty) n_ras_nonempty = n_ras_nonempty + 32'd1;
-      if (u_dut.u_cpu.pred_is_ret) begin
+      if (u_dut.u_cpu.pred_hit && u_dut.u_cpu.pred_is_ret) begin
         n_pred_is_ret = n_pred_is_ret + 32'd1;
         if (u_dut.u_cpu.ras_top !== u_dut.u_cpu.btb_pred_target)
           n_ras_diff = n_ras_diff + 32'd1;
@@ -379,7 +375,7 @@ module tb_sw;
   integer    cycA, cycB, cycC, d1, d2;
   reg [7:0]  ch_b;
   reg        str_done;
-`ifdef RAS_EN
+`ifndef RAS_DIS
   integer    bi;
   reg [31:0] n_ret_entries;
 `endif
@@ -458,7 +454,7 @@ module tb_sw;
     else
       $display("  OK (0 次错位)");
 
-`ifdef RAS_EN
+`ifndef RAS_DIS
     $display("  --- RAS (返回地址栈) ---");
     $display("  push(call) = %0d   pop(ret) = %0d   栈顶非空拍数 = %0d",
              n_ras_push, n_ras_pop, n_ras_nonempty);
@@ -466,7 +462,7 @@ module tb_sw;
              n_pred_is_ret, n_ras_diff);
     n_ret_entries = 32'd0;
     for (bi = 0; bi < BTB_N; bi = bi + 1)
-      if (u_dut.u_cpu.u_btb.meta_ram[bi][BTB_META_W-1] && u_dut.u_cpu.u_btb.meta_ram[bi][BTB_META_W-3])
+      if (u_dut.u_cpu.u_btb.valid_arr[bi] && u_dut.u_cpu.u_btb.meta_ram[bi][BTB_META_W-2])
         n_ret_entries = n_ret_entries + 32'd1;
     $display("  BTB 中 is_ret=1 的表项 = %0d", n_ret_entries);
 `endif

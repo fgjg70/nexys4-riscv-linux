@@ -37,8 +37,14 @@ module load_store_unit (
   output wire        dmem_re,
   input  wire [31:0] dmem_rdata,
   input  wire        dbus_stall,
+  // L0 D-Cache 0 拍异步快读口 (MEM 拍命中直接完成字节提取 -> mem_wb_load_data)
+  output wire        dbus_l0_en,
+  input  wire        dbus_fast_hit,
+  input  wire [31:0] dbus_fast_rdata,
 
   output reg  [31:0] load_data,
+  output wire        fast_load_hit,
+  output reg  [31:0] fast_load_data,
   output wire        lsu_stall,
   output wire        lsu_mem_resp,
   output wire        lsu_in_tail,
@@ -77,14 +83,9 @@ module load_store_unit (
                             (({30'd0, off} + size_bytes) > 32'd4);
 
   wire [31:0] head_addr = {req_addr[31:2], 2'b00};
-  wire [31:0] tail_addr = head_addr + 32'd4;
-
-`ifndef A_DIS
-  assign dmem_addr = (state == S_AMO)  ? amo_addr_r
-                   : (state == S_IDLE) ? head_addr : tail_addr;
-`else
-  assign dmem_addr = (state == S_IDLE) ? head_addr : tail_addr;
-`endif
+  // Round 3 时序优化: 拆分尾字地址 tail_addr (head_addr+4) 在 S_IDLE->S_HEAD 边沿寄存入 amo_addr_r
+  // (S_AMO 与 S_HEAD/S_TAIL 严格互斥), 彻底消除 dmem_addr 路径上的 32 位 CARRY4 加法器 (~2.4 ns)!
+  assign dmem_addr = (state == S_IDLE) ? head_addr : amo_addr_r;
 
   // Store 移位与字节写使能
   wire [63:0] store_shifted = {32'b0, req_wdata} << {off, 3'b000};
@@ -153,6 +154,27 @@ module load_store_unit (
     endcase
   end
 
+  // MEM 拍 L0D 0 拍快读资格与字节提取 (仅限单字对齐 Load，拆分/AMO 走原有安全多拍路径)
+  // dbus_l0_en 送入 dcache 并行门控 l0_ctrl_ok，使 dbus_fast_hit 直通为 fast_load_hit (零额外 LUT)
+  assign dbus_l0_en    = (state == S_IDLE) && req_read && !req_write &&
+                         !needs_split && !amo_en && !req_cancel;
+  assign fast_load_hit = dbus_fast_hit;
+
+  wire [31:0] fast_raw = (off == 2'd0) ? dbus_fast_rdata :
+                         (off == 2'd1) ? {8'd0,  dbus_fast_rdata[31:8]} :
+                         (off == 2'd2) ? {16'd0, dbus_fast_rdata[31:16]} :
+                                         {24'd0, dbus_fast_rdata[31:24]};
+
+  always @(*) begin
+    case (req_size)
+      `MEM_BYTE: fast_load_data = req_unsigned ? {24'b0, fast_raw[7:0]}
+                                               : {{24{fast_raw[7]}}, fast_raw[7:0]};
+      `MEM_HALF: fast_load_data = req_unsigned ? {16'b0, fast_raw[15:0]}
+                                               : {{16{fast_raw[15]}}, fast_raw[15:0]};
+      default:   fast_load_data = fast_raw;
+    endcase
+  end
+
   always @(posedge clk or posedge rst) begin
     if (rst) begin
       state       <= S_IDLE;
@@ -208,6 +230,9 @@ module load_store_unit (
         end
       end
       else begin
+        if ((state == S_IDLE) && needs_split) begin
+          amo_addr_r <= head_addr + 32'd4;
+        end
         // Trap/MRET 或普通 store 写入同字地址时清除 LR/SC 预约
         if (res_clear || (req_write && !amo_en && dmem_we && (dmem_addr[31:2] == res_addr))) begin
           res_valid <= 1'b0;

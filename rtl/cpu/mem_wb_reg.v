@@ -17,6 +17,7 @@ module mem_wb_reg (
   input  wire [`CTRL_W-1:0] ctrl_in,
   input  wire [31:0]        alu_out_in,
   input  wire [31:0]        load_data_in,
+  input  wire               fast_load_in,
   input  wire [31:0]        pc_plus4_in,
   input  wire [4:0]         rd_addr_in,
 
@@ -25,6 +26,7 @@ module mem_wb_reg (
   output reg  [`CTRL_W-1:0] ctrl,
   output reg  [31:0]        alu_out,
   output reg  [31:0]        load_data,
+  output reg                fast_load,
   output reg  [31:0]        pc_plus4,
   output reg  [4:0]         rd_addr
 );
@@ -36,6 +38,7 @@ module mem_wb_reg (
       ctrl      <= `CTRL_NOP;
       alu_out   <= 32'd0;
       load_data <= 32'd0;
+      fast_load <= 1'b0;
       pc_plus4  <= 32'd0;
       rd_addr   <= 5'd0;
     end
@@ -45,6 +48,7 @@ module mem_wb_reg (
       ctrl      <= `CTRL_NOP;
       alu_out   <= 32'd0;
       load_data <= 32'd0;
+      fast_load <= 1'b0;
       pc_plus4  <= 32'd0;
       rd_addr   <= 5'd0;
     end
@@ -54,6 +58,7 @@ module mem_wb_reg (
       ctrl      <= ctrl_in;
       alu_out   <= alu_out_in;
       load_data <= load_data_in;
+      fast_load <= fast_load_in;
       pc_plus4  <= pc_plus4_in;
       rd_addr   <= rd_addr_in;
     end

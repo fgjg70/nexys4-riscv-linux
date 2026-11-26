@@ -1,4 +1,4 @@
-# 两轮全局审计与系统优化报告（纯 Verilog-2001/2005）
+# 四轮全局审计与系统优化报告（纯 Verilog-2001/2005）
 
 > **目标平台**：Digilent Nexys 4 DDR（Artix-7 `xc7a100tcsg324-1`，MIG 7 Series DDR2 `ui_clk = 75.0 MHz`）
 > **基线提交**：`a957b1a`（Stage 2 完整外设基线：`6,358 LUT` / `3,951 FF` / `8 BRAM36` / `8 DSP48E1` / `79.05 MHz`）
@@ -98,6 +98,65 @@
 
 ## 回归与签核清单
 
-- [x] **纯 Verilog 零违规**：全仓库 0 个 `.sv` 文件；Vivado `xvlog`（禁 `--sv`）42/42 零报错。
-- [x] **ModelSim 24/24 全通过**：`default(radix-2)` 12/12 + `DIV_RADIX4` 12/12，新增覆盖 NS16550A THRE `IIR` 读清与重触发、VGA `+0x0C` 分辨率 ID、OV5640 `BYTE_SWAP`/`VSYNC_INV`/`FIFO_CLR`、`mig_ddr2_bridge` 4× 读行缓冲计数与写命中失效、BRAM 打包 BTB 逐拍自证。
-- [x] **Vivado 2018.3 `xc7a100tcsg324-1` OOC 布局布线签核**：`5,742 LUT (9.06%)` / `3,427 FF (2.70%, 0 Latch)` / `8 BRAM36 (5.93%)` / `4 DSP48E1 (1.67%)` / **`sys_clk = 93.36 MHz`**（相对 75 MHz MIG `ui_clk` 具备 **`+2.622 ns`** 正裕量）。
+- [x] **纯 Verilog 零违规**：全工程主线（`rtl/`、`fpga/`、`sim/`）0 个 `.sv` 文件；Vivado `xvlog` / `read_verilog` 严格禁 `--sv`/`-sv` 零报错。
+- [x] **24/24 双模式严格纯 Verilog 回归全通过**：`default(radix-2)` 12/12 + `DIV_RADIX4` 12/12（ModelSim / Vivado `xsim` 均全量通过），覆盖 NS16550A THRE、VGA、OV5640、`mig_ddr2_bridge` 4× 读行缓冲、分布式 Taken-Only BTB + Bimodal + 16 项 RAS 逐拍自证、8 KB 2 路 VIPT I/D-Cache 与 256 B L0D 旁路/一致性/异常取消。
+- [x] **Vivado 2023.2 `xc7a100tcsg324-1` Round 4 100 MHz 布局布线签核**：`rv32_soc` 占 `7,315 LUT (11.54%，含 570 LUTRAM)` / `3,943 FF (3.11%, 0 Latch)` / `9.0 BRAM36 (6.67%)` / `4 DSP48E1 (1.67%)` / **`sys_clk = 100.52 MHz`**（**`WNS = +0.052 ns`, `TNS = 0.000 ns`, 0/11,876 违例, `WHS = +0.031 ns`**）；`mig_ddr2_bridge`（100 MHz ↔ 75 MHz 双异步 FIFO 桥）独立 OOC 布局布线占 `165 LUT / 458 FF / 4.5 BRAM36`，`sys_clk` (100 MHz) **`+4.332 ns`** / `mig_clk` (75 MHz) **`+7.606 ns`**；`tb_linux_soc`（`soc_test.hex`, `ram_lat=4`）执行周期 **85,497**（较 Round 2 基线 95,651 **-10.62% / +11.88% IPC**，叠加 75→100 MHz 实板墙钟提速 **~1.49×**）。
+
+---
+
+## 第三轮：分支预测分布式化 + 8 KB 2 路 VIPT Cache + 256 B 0 拍直写 L0D 协同升级
+
+基于 Round 2（`e806489`）的绝对吞吐量权衡评估，本轮面向 Linux 访存与控制流密集型负载落地四大微架构升级，并完成 Vivado 2023.2 布局布线闭环：
+
+| 维度 | Round 2 基线 (`e806489`) | Round 3 升级后 | 净变化 / 说明 |
+|---|---:|---:|---|
+| **分支预测器** | 512 项 BRAM BTB + 8K BRAM gshare（无 stall 保护），RAS 默认关闭 | **128 项分布式 RAM Taken-Only BTB + 512 项分布式 Bimodal + 默认 16 项分布式 RAS** | 省 1.5 块 BRAM Tile；1 拍 `flush_all` 取代 512 拍清零盲区；流水线透传 `pred_ctr` 根除 `align_bad` 污染；Taken-Only 等效容量 ~1.8–2× |
+| **L1 I/D-Cache** | 4 KB 直映 I$ + 4 KB 直映 D$（2×`RAMB36E1`） | **8 KB 2 路 VIPT I$ + 8 KB 2 路 VIPT D$**（4×`RAMB36E1` + 1-bit LRU） | 每路仍严格 4 KB（`addr[11:5]` 页内索引，天然 VIPT 无别名），显著降低冲突缺失 |
+| **L0 D-Cache** | 无（Load-Use 固定 2 拍气泡） | **256 B（64×32b 单级原生 `RAM64M`）0 拍并行直写 L0D** | MEM 拍 0 拍读出并完成字节提取进 `mem_wb_load_data` FF，Load-Use 2 拍→1 拍（`dist=2` 零气泡）；WB 确认无异常提交写（无脏行、无推测污染）；`FENCE.I` 1 拍全清 |
+| **`tb_linux_soc` (`soc_test.hex`)** | 95,651 cycles | **84,878 cycles** | **-10,773 cycles（-11.26%，+12.69% IPC 提速）** |
+| **Slice LUTs / LUTRAM** | 5,742 / 216（Vivado 2018.3） | **8,322 / 658**（Vivado 2023.2） | 占 XC7A100T 仅 **13.13%** |
+| **Slice Registers (FF)** | 3,427 (0 Latch) | **4,265 (0 Latch)** | 占 XC7A100T 仅 **3.36%** |
+| **Block RAM Tile / DSP48E1** | 8.0 / 4 | **8.5 / 4** | Cache 翻倍仅净增 **+0.5 BRAM Tile** |
+| **Post-Route `sys_clk`** | 93.36 MHz (`-0.711 ns`) | **90.60 MHz (`-1.037 ns`, `TNS = -23.72 ns`)** | 相对 MIG 75 MHz 留有 **+2.296 ns** 裕量；无约束极限绝对吞吐 **+9.4%**，75 MHz 实板 **+12.7%** |
+| **异步域裕量 / Hold** | `cam_pclk` +14.60 / `vga_clk` +36.01 / `WHS` +0.078 ns | **`cam_pclk` +14.81 / `vga_clk` +35.45 / `WHS` +0.095 ns** | 0 组合环 / 0 Latch / 0 Critical Warnings |
+
+### Round 3 时序收口关键技术点（`-5.170 ns` → `-1.037 ns`，累计追回 `+4.13 ns`）
+
+1. **LSU 拆分尾址寄存化（`rtl/cpu/load_store_unit.v`）**：将 `tail_addr = head_addr + 4` 移至 `S_IDLE -> S_HEAD` 边沿复用 `amo_addr_r` 寄存（`S_AMO` 与拆分态互斥），彻底移除 `dmem_addr` 路径上的 32 位 `CARRY4` 加法器（省 ~2.4 ns）。
+2. **L0D 甜点容量与直连寻址（`rtl/soc/dcache.v`、`rtl/cpu/rv32_cpu.v`）**：对比 512 B（84,853 周期）与 256 B（84,878 周期，仅差 0.03%），选定 64 字 **256 B 单级原生 `RAM64M`**（零 bank mux），由 `ex_mem_alu_out` FF 直连 `dbus_l0_addr` 并由 `dbus_l0_en` 门控单字对齐读，6-bit `l0_st_haz` 替代 30-bit `same_word_fwd`，`(* keep *)` 并行收敛 `l0_ctrl_ok` 与 `l0_tag_eq`。
+3. **2 路 I-Cache 同步 Tag/有效位读取（`rtl/soc/icache.v`）**：双路 `tag_ram0/1`（分布式 RAM + 切片寄存器 `tag0_q/tag1_q`）与 `vld0_q/vld1_q`（独立 `do_lookup` CE）在 IF 拍同步读出，将 20-bit Tag 比较与 `is_cacheable` 移出 `pc_next` 路径，且 ID 拍双路命中在 `RAMB36E1` 数据返回前就绪。
+4. **控制与扇出解耦（`btb.v` / `pc.v` / `id_ex_reg.v` / `hazard_unit.v` / `rv32_cpu.v` / `plic.v`）**：
+   - `btb.pred_is_ret` 直出 `p_is_ret` 使 RAS/BTB 目标选择与 23-bit Tag 比较并行；`pc` 加 `max_fanout = 24`；
+   - `pc_hold_sel = fetch_hold && !pc_flush` 与 `u_pc.stall` 共享折叠为单级 LUT6，并独立于 `id_ex_reg` 控制段 `flush||bubble`（数据段 220 位仅受 `!stall` 门控）；
+   - `plic.v` 将原 7 级串行中断仲裁循环重构为 3 级平衡二叉锦标赛树（15 级→5 级逻辑）。
+
+---
+
+## 第四轮：冲破 100 MHz 主频 + 8K BRAM Bimodal BHT + 100↔75 MHz 异步 FIFO DDR2 解耦
+
+在不牺牲 Round 3 全部微架构收益的前提下，本轮精准切碎 Round 3 Top-1 `-1.037 ns` 关键路径，同时吸收高容量单块 BRAM PHT 思路并在确认 `sys_clk ≥ 100 MHz` 后落地 128-bit 宽边界异步 FIFO DDR2 解耦架构：
+
+| 维度 | Round 3 (`r3f`) | Round 4 (`r4c` + 异频 DDR2 桥) | 净变化 / 说明 |
+|---|---:|---:|---|
+| **BHT 方向预测表** | 512 项分布式 LUTRAM | **8,192 项单块 `RAMB18E1` 同步 Bimodal** | **16× 容量扩容**；由 `pc_next` 提前一拍预读 + `pred_en = rst \|\| !pc_hold_sel` 停顿锁存，BRAM 读延迟与 `pc <= pc_next` 完全重合 |
+| **L1 I-Cache 构型** | 128 组 × 32 B × 2 路（64-bit `valid` FF + 128×20b Tag） | **64 组 × 64 B × 2 路（21-bit 单级 `RAM64M` `{vld,tag}` + `S_FLUSH`）** | 消除 4 级 LUT6 64:1 `valid` mux（省 ~1.8 ns）与 128 项 Tag bank mux；保持 4 KB/路 VIPT 无别名；单级 LUT5 `ibus_rdata` |
+| **D-Cache 握手与故障** | `dbus_stall`/`dbus_fault` 组合输出 + `wb_fault` 串 `!dbus_stall` | **纯 FF `dbus_stall_r`/`dbus_fault_r` + 剥离冗余 `!dbus_stall`** | 彻底斩断 Round 3 Top-1 `q_valid -> dbus_stall -> any_bus_fault(fo=167) -> trap_redir -> pc_next`（-1.037 ns）路径 |
+| **RAS / ID-EX 扇出优化** | `ex_is_call/ret` 依赖 `br_misalign_cond`；`id_ex` CE `fo=272` | **`btb_upd_base` 移出条件分支比较器；`id_ex_reg` `dp_en` 拆扇出** | `u_ras` 脱离 32-bit 4×CARRY4 分支比较器；`id_ex` 272-bit 数据通路 CE 压降 ~0.4 ns |
+| **Slice LUTs / LUTRAM** | 8,322 / 658 | **7,315 / 570**（`rv32_soc`）+ 165（桥） | **`rv32_soc` 净降 -1,007 LUT（-12.1%）** |
+| **Slice Registers (FF)** | 4,265 (0 Latch) | **3,943 (0 Latch)**（`rv32_soc`）+ 458（桥） | **`rv32_soc` 净降 -322 FF（-7.5%）** |
+| **Block RAM Tile / DSP** | 8.5 / 4 | **9.0 / 4**（`rv32_soc`）+ **4.5**（桥双异步 FIFO） | 总 BRAM 仅 **13.5 / 135（10.0%）** |
+| **Post-Route `sys_clk`** | 90.60 MHz (`-1.037 ns`, `TNS=-23.72 ns`) | **100.52 MHz (`WNS = +0.052 ns`, `TNS = 0.000 ns`, 0 违例)** | **+9.92 MHz (+10.95%)，默认 `opt/place/route` 一次达标 100 MHz** |
+| **实板主频 & DDR2 解耦** | 75 MHz 同频（绑定 MIG `ui_clk`） | **100 MHz SoC ↔ 75 MHz MIG 128-bit 双异步 FIFO** | `clk_wiz_0` VCO=1200 MHz 精确整数分频 `200/100/25/24 MHz`；实板主频 **+33.3%** |
+| **`mig_ddr2_bridge` 裕量** | 75 MHz 同步直连 | **`sys_clk`(100 MHz) `+4.332 ns` / `mig_clk`(75 MHz) `+7.606 ns`** | 128-bit `rd_buf` 与 16 项 Posted Write 驻留 100 MHz 侧，隐藏写 CDC 与 DDR2 写延迟并严格保序 |
+| **`tb_linux_soc` / `tb_sw_hello`** | 84,878 / 6,176 cycles | **85,497 / 6,176 cycles**（CPI=1.138, 精度 87%） | 叠加 75→100 MHz 实板墙钟提速 **~1.49×**（vs Round 2 75 MHz） |
+
+### Round 4 关键技术闭环记录
+
+1. **为什么 64-bit `valid0/1` 必须并入 21-bit `RAM64M` `{valid, tag}`（`r4a` → `r4b` → `r4c` 实测对比）**：
+   - `r4a` 保留 64-bit `valid0/1` FF 并于 IF 拍预选 `vld0_q/vld1_q` 时，全片 11,719 个终点中**仅剩 2 个终点违例**（`vld0_q -0.236 ns` / `vld1_q -0.130 ns`），根因是 64:1 FF 多路选择器展开为 4 级 LUT6（2.21 ns）；
+   - `r4b` 将 `valid0/1[q_idx]` 移至 ID 拍则导致 64:1 mux（4.27 ns）反超 Tag 比较并拖慢 `id_ex/CE`；
+   - `r4c` 将 `valid` 打包为 21-bit `tag_ram0/1[20]`（原生单级 `RAMD64E` 仅 0.35 ns）并配 64 拍 `S_FLUSH`（在 `rst` 与 `FENCE.I` 期间顺序清零，`S_REFILL`/`S_UNCACHED` 遇 `flush_all` 挂起 `flush_pend` 待当前字 `mem_ack` 后安全转入），一次性将 `WNS` 推正至 **`+0.052 ns`（100.52 MHz, `TNS = 0`）**，同时再省 **345 LUT + 132 FF**。
+2. **128-bit 宽边界异步 FIFO 解耦设计（`rtl/soc/mig_ddr2_bridge.v`、`fpga/nexys4_ddr/*`）**：
+   - 128-bit（4 字）读行缓冲 `rd_buf` 留在 `100 MHz` 侧，64 B I-Cache 填充仅需 4 次 CDC、32 B D-Cache 填充仅需 2 次 CDC，同行后 3 字 10 ns 直出；
+   - 16 项 × 172-bit `u_req_fifo` 同时按程序顺序承载写请求与读请求：写请求未满即 1 拍应答（100 MHz 全速吞下整行 32 B D-Cache 脏行回写）并失效命中 `rd_buf`，后继读请求排在同一队列之后确保 MIG 后端严格先写后读；
+   - `sim/tb_periph_stage2.v` 升级为真实 **100 MHz（10 ns）vs 75 MHz（13.334 ns）** 异频异步压测，覆盖 24 次连续 Posted Write 满队反压、4×/6× 突发计数断言、写命中失效与同址高频读写交替，24/24 回归全量通过；`top_nexys4_ddr.v` 通过纯 Verilog `xvlog`/`xelab` 编译细化 0 报错。

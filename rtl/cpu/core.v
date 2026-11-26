@@ -74,7 +74,7 @@ module core (
   rv32_cpu #(
     .RESET_PC     (`PC_RESET),
     .MTVEC_RESET  (32'h8000_0100),
-    .BTB_IDX_BITS (9),
+    .BTB_IDX_BITS (7),
     .BTB_PC_TOP   (32)
   ) u_cpu (
     .clk           (clk),
@@ -93,6 +93,10 @@ module core (
     .dbus_rdata    (dmem_rdata_g),
     .dbus_stall    (1'b0),
     .dbus_fault    (1'b0),
+    .dbus_l0_en      (),
+    .dbus_l0_addr    (),
+    .dbus_fast_hit   (1'b0),
+    .dbus_fast_rdata (32'd0),
     .fencei_req    (fencei_req),
     .fencei_done   (1'b1),
     .mtime_i       (local_mtime),

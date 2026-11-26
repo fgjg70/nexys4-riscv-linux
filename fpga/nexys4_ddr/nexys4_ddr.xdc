@@ -96,9 +96,12 @@ create_clock -add -name cam_pclk_pin -period 20.833 [get_ports { CAM_PCLK }];
 ## 若实际转接板将 CAM_PCLK 改接到非时钟专用脚，取消下行注释:
 # set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets CAM_PCLK_IBUF];
 
-## 跨时钟域异步组约束 (所有 CDC 均已由 2-FF 同步器或格雷码 async_fifo 保护)
+## 跨时钟域异步组约束 (所有 CDC 均已由 ASYNC_REG 2-FF 同步器或格雷码 async_fifo 保护)
+## Round 4: clk_100m (SoC)、clk_25m (VGA)、ui_clk (MIG 75 MHz) 与 cam_pclk_pin 彼此独立异步
 set_clock_groups -asynchronous \
-  -group [get_clocks -include_generated_clocks sys_clk_100m] \
+  -group [get_clocks -of_objects [get_nets {clk_100m clk_200m clk_24m}]] \
+  -group [get_clocks -of_objects [get_nets clk_25m]] \
+  -group [get_clocks -of_objects [get_nets ui_clk]] \
   -group [get_clocks cam_pclk_pin];
 
 ## 配置电压与比特流压缩

@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -192,10 +193,15 @@ def find_vivado_bin() -> Path | None:
     env_bin = os.environ.get("VIVADO_BIN")
     if env_bin and (Path(env_bin) / "xvlog.bat").exists():
         return Path(env_bin)
-    for c in [
+    candidates = [
         Path(r"D:\software\Learn\Xilinx\Vivado\2018.3\bin"),
         Path(r"C:\Xilinx\Vivado\2018.3\bin"),
-    ]:
+    ]
+    for root in (Path(r"C:\Xilinx\Vivado"), Path(r"D:\software\Learn\Xilinx\Vivado"), Path(r"E:\Vivado")):
+        if root.exists():
+            for ver in sorted(root.iterdir(), reverse=True):
+                candidates.append(ver / "bin")
+    for c in candidates:
         if (c / "xvlog.bat").exists():
             return c
     xv = shutil.which("xvlog")
@@ -203,8 +209,19 @@ def find_vivado_bin() -> Path | None:
 
 
 def run_cmd(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    if os.name == "nt" and cmd and cmd[0].lower().endswith(".bat"):
+        # cmd.exe treats unquoted '=' as an argument delimiter in .bat wrappers (e.g., xsim --testplusarg k=v)
+        parts = []
+        for a in cmd:
+            if any(ch in a for ch in (" ", "\t", "=", ";", ",")):
+                parts.append('"' + a.replace('"', '\\"') + '"')
+            else:
+                parts.append(a)
+        cmd_arg: list[str] | str = " ".join(parts)
+    else:
+        cmd_arg = cmd
     return subprocess.run(
-        cmd,
+        cmd_arg,
         cwd=str(cwd),
         env=env,
         stdout=subprocess.PIPE,
@@ -239,7 +256,7 @@ def run_suite_msim(msim_bin: Path, defines: list[str], only: str | None) -> bool
         print(f"ERROR: unknown test '{only}'")
         return False
 
-    work_root = ROOT / ".sim_work"
+    work_root = Path(tempfile.gettempdir()) / f"nexys4_sim_work_{os.getpid()}"
     shutil.rmtree(work_root, ignore_errors=True)
     work_root.mkdir(parents=True, exist_ok=True)
     try:
@@ -301,7 +318,7 @@ def run_suite_xsim(vivado_bin: Path, defines: list[str], only: str | None) -> bo
         print(f"ERROR: unknown test '{only}'")
         return False
 
-    work_root = ROOT / ".sim_work"
+    work_root = Path(tempfile.gettempdir()) / f"nexys4_sim_work_{os.getpid()}"
     shutil.rmtree(work_root, ignore_errors=True)
     work_root.mkdir(parents=True, exist_ok=True)
     try:

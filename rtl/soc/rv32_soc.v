@@ -98,6 +98,10 @@ module rv32_soc #(
   wire        dbus_re, dbus_we, dbus_stall, dbus_fault;
   wire [31:0] dbus_addr, dbus_wdata, dbus_rdata;
   wire [3:0]  dbus_wstrb;
+  wire        dbus_l0_en;
+  wire [31:0] dbus_l0_addr;
+  wire        dbus_fast_hit;
+  wire [31:0] dbus_fast_rdata;
 
   // FENCE.I 握手
   wire        fencei_req, fencei_done, icache_flush;
@@ -147,7 +151,7 @@ module rv32_soc #(
   rv32_cpu #(
     .RESET_PC     (RESET_PC),
     .MTVEC_RESET  (32'h8000_0100),
-    .BTB_IDX_BITS (9),
+    .BTB_IDX_BITS (7),
     .BTB_PC_TOP   (32)
   ) u_cpu (
     .clk           (clk),
@@ -166,6 +170,10 @@ module rv32_soc #(
     .dbus_rdata    (dbus_rdata),
     .dbus_stall    (dbus_stall),
     .dbus_fault    (dbus_fault),
+    .dbus_l0_en      (dbus_l0_en),
+    .dbus_l0_addr    (dbus_l0_addr),
+    .dbus_fast_hit   (dbus_fast_hit),
+    .dbus_fast_rdata (dbus_fast_rdata),
     .fencei_req    (fencei_req),
     .fencei_done   (fencei_done),
     .mtime_i       (mtime_val),
@@ -206,16 +214,20 @@ module rv32_soc #(
   );
 
   dcache u_dcache (
-    .clk          (clk),
-    .rst          (rst),
-    .dbus_re      (dbus_re),
-    .dbus_we      (dbus_we),
-    .dbus_addr    (dbus_addr),
-    .dbus_wdata   (dbus_wdata),
-    .dbus_wstrb   (dbus_wstrb),
-    .dbus_rdata   (dbus_rdata),
-    .dbus_stall   (dbus_stall),
-    .dbus_fault   (dbus_fault),
+    .clk             (clk),
+    .rst             (rst),
+    .dbus_re         (dbus_re),
+    .dbus_we         (dbus_we),
+    .dbus_addr       (dbus_addr),
+    .dbus_wdata      (dbus_wdata),
+    .dbus_wstrb      (dbus_wstrb),
+    .dbus_rdata      (dbus_rdata),
+    .dbus_stall      (dbus_stall),
+    .dbus_fault      (dbus_fault),
+    .dbus_l0_en      (dbus_l0_en),
+    .dbus_l0_addr    (dbus_l0_addr),
+    .dbus_fast_hit   (dbus_fast_hit),
+    .dbus_fast_rdata (dbus_fast_rdata),
     .fencei_req   (fencei_req),
     .fencei_done  (fencei_done),
     .icache_flush (icache_flush),

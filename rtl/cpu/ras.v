@@ -29,7 +29,7 @@ module ras #(
   localparam CNT_W = $clog2(DEPTH + 1);
   localparam [CNT_W-1:0] MAX_CNT = DEPTH;
 
-  reg [31:0]      stk [0:DEPTH-1];
+  (* ram_style = "distributed" *) reg [31:0] stk [0:DEPTH-1];
   reg [PTR_W-1:0] tos;          // 指向下一次 push 槽位，栈顶位于 tos - 1
   reg [CNT_W-1:0] cnt;          // 有效深度 (0..DEPTH)
   integer i;

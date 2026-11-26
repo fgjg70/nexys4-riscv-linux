@@ -19,7 +19,7 @@ module pc #(
   input  wire            pc_src,
   input  wire [XLEN-1:0] pc_target,
 
-  output reg  [XLEN-1:0] pc,
+  (* max_fanout = 24 *) output reg  [XLEN-1:0] pc,
   output wire [XLEN-1:0] pc_plus4
 );
 

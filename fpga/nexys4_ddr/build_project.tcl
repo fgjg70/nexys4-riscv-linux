@@ -1,6 +1,7 @@
 # ============================================================================
-# fpga/nexys4_ddr/build_project.tcl — Vivado 2018.3 Nexys 4 DDR 完整工程构建脚本
-# 生成纯 Verilog 工程 (含 Clocking Wizard 200/25/24 MHz + MIG 7 Series 128 MB DDR2)
+# fpga/nexys4_ddr/build_project.tcl — Vivado 2018.3/2023.2 Nexys 4 DDR 完整工程构建脚本
+# 生成纯 Verilog 工程 (含 Clocking Wizard 200/100/25/24 MHz + MIG 7 Series 128 MB DDR2)
+# Round 4 架构: rv32_soc 跑 100 MHz (clk_100m)，经 128-bit 双异步 FIFO 与 75 MHz MIG 解耦
 # 用法:
 #   vivado -mode batch -source fpga/nexys4_ddr/build_project.tcl -tclargs <PROJ_DIR>
 # ============================================================================
@@ -56,7 +57,7 @@ set_property top top_nexys4_ddr [current_fileset]
 # 约束文件
 add_files -fileset constrs_1 -norecurse "$root_dir/fpga/nexys4_ddr/nexys4_ddr.xdc"
 
-# IP 1: Clocking Wizard (100 MHz -> 200 MHz MIG / 25 MHz VGA / 24 MHz OV5640 XCLK)
+# IP 1: Clocking Wizard (VCO=1200 MHz 精确整数分频: 200 MHz MIG / 25 MHz VGA / 24 MHz OV5640 / 100 MHz SoC)
 create_ip -name clk_wiz -vendor xilinx.com -library ip -module_name clk_wiz_0
 set_property -dict [list \
   CONFIG.PRIM_IN_FREQ {100.000} \
@@ -69,6 +70,9 @@ set_property -dict [list \
   CONFIG.CLKOUT3_USED {true} \
   CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {24.000} \
   CONFIG.CLK_OUT3_PORT {clk_24m} \
+  CONFIG.CLKOUT4_USED {true} \
+  CONFIG.CLKOUT4_REQUESTED_OUT_FREQ {100.000} \
+  CONFIG.CLK_OUT4_PORT {clk_100m} \
   CONFIG.RESET_TYPE {ACTIVE_LOW} \
   CONFIG.RESET_PORT {resetn} \
 ] [get_ips clk_wiz_0]

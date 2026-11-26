@@ -27,6 +27,7 @@ module id_ex_reg (
   input  wire [4:0]          rd_addr_in,
   input  wire                pred_taken_in,
   input  wire [31:0]         pred_target_in,
+  input  wire [1:0]          pred_ctr_in,
 
   output reg  [`CTRL_W-1:0]  ctrl,
   output reg                 valid,
@@ -41,30 +42,40 @@ module id_ex_reg (
   output reg  [4:0]          rs2_addr,
   output reg  [4:0]          rd_addr,
   output reg                 pred_taken,
-  output reg  [31:0]         pred_target
+  output reg  [31:0]         pred_target,
+  output reg  [1:0]          pred_ctr
 );
 
+  // 控制段 (受 flush || bubble 清零为合法 NOP，扇出仅 ~62 位)
   always @(posedge clk or posedge rst) begin
     if (rst) begin
-      ctrl        <= `CTRL_NOP;
-      valid       <= 1'b0;
-      if_fault    <= 1'b0;
-      instr       <= 32'd0;
-      pc          <= 32'd0;
-      pc_plus4    <= 32'd0;
-      rs1_data    <= 32'd0;
-      rs2_data    <= 32'd0;
-      imm         <= 32'd0;
-      rs1_addr    <= 5'd0;
-      rs2_addr    <= 5'd0;
-      rd_addr     <= 5'd0;
-      pred_taken  <= 1'b0;
-      pred_target <= 32'd0;
+      ctrl       <= `CTRL_NOP;
+      valid      <= 1'b0;
+      if_fault   <= 1'b0;
+      rd_addr    <= 5'd0;
+      pred_taken <= 1'b0;
     end
     else if (flush || bubble) begin
-      ctrl        <= `CTRL_NOP;
-      valid       <= 1'b0;
-      if_fault    <= 1'b0;
+      ctrl       <= `CTRL_NOP;
+      valid      <= 1'b0;
+      if_fault   <= 1'b0;
+      rd_addr    <= 5'd0;
+      pred_taken <= 1'b0;
+    end
+    else if (!stall) begin
+      ctrl       <= ctrl_in;
+      valid      <= valid_in;
+      if_fault   <= if_fault_in;
+      rd_addr    <= rd_addr_in;
+      pred_taken <= pred_taken_in;
+    end
+  end
+
+  // 数据通路段 (仅受 !stall 门控，气泡期间 ctrl=CTRL_NOP/valid=0 不消费这些数据，
+  // 节省 ~220 LUT 并通过 max_fanout 拆分 272-bit CE 扇出，压缩 CE 布线延迟 ~0.4ns)
+  (* max_fanout = 64 *) wire dp_en = !stall;
+  always @(posedge clk or posedge rst) begin
+    if (rst) begin
       instr       <= 32'd0;
       pc          <= 32'd0;
       pc_plus4    <= 32'd0;
@@ -73,14 +84,10 @@ module id_ex_reg (
       imm         <= 32'd0;
       rs1_addr    <= 5'd0;
       rs2_addr    <= 5'd0;
-      rd_addr     <= 5'd0;
-      pred_taken  <= 1'b0;
       pred_target <= 32'd0;
+      pred_ctr    <= 2'b01;
     end
-    else if (!stall) begin
-      ctrl        <= ctrl_in;
-      valid       <= valid_in;
-      if_fault    <= if_fault_in;
+    else if (dp_en) begin
       instr       <= instr_in;
       pc          <= pc_in;
       pc_plus4    <= pc_plus4_in;
@@ -89,9 +96,8 @@ module id_ex_reg (
       imm         <= imm_in;
       rs1_addr    <= rs1_addr_in;
       rs2_addr    <= rs2_addr_in;
-      rd_addr     <= rd_addr_in;
-      pred_taken  <= pred_taken_in;
       pred_target <= pred_target_in;
+      pred_ctr    <= pred_ctr_in;
     end
   end
 

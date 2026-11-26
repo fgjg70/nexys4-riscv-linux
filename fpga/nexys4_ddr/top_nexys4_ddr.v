@@ -4,17 +4,19 @@
 // ============================================================================
 // top_nexys4_ddr.v — Digilent Nexys 4 DDR (xc7a100tcsg324-1) 实板顶层 (纯 Verilog-2001)
 // ----------------------------------------------------------------------------
-// 时钟架构:
-//   - 板载 100 MHz (E3) -> clk_wiz_0:
+// 时钟架构 (Round 4 100 MHz SoC + 128-bit 异步 FIFO DDR2 解耦):
+//   - 板载 100 MHz (E3) -> clk_wiz_0 (VCO=1200 MHz 精确整数分频):
 //       * clk_200m (200 MHz) -> MIG 7 Series DDR2 sys_clk_i & 参考时钟
+//       * clk_100m (100 MHz) -> rv32_soc CPU/Cache/外设主时钟 (+33.3% 实板主频!)
 //       * clk_25m  (25 MHz)  -> VGA 640×480@60Hz 像素时钟
 //       * clk_24m  (24 MHz)  -> OV5640 外部 XCLK
 //   - MIG 7 Series (MT47H64M16HR-25E, 300 MHz DDR2, 4:1 PHY) 输出 ui_clk = 75 MHz:
-//       * rv32_soc 与 mig_ddr2_bridge 同跑在 ui_clk (75 MHz) 域，零主存 CDC 延迟。
+//       * mig_ddr2_bridge 在 128-bit 宽边界以双异步 FIFO 解耦 clk_100m <-> ui_clk，
+//         128-bit 读行缓冲与 Posted Write 队列驻留 100 MHz 侧，兼顾 100 MHz 主频与高带宽。
 // LED 诊断:
 //   - LED[0]    : DDR2 init_calib_complete
 //   - LED[1]    : MMCM clk_wiz_0 locked
-//   - LED[2]    : ui_clk 心跳闪烁 (~1.1 Hz)
+//   - LED[2]    : clk_100m 心跳闪烁 (~1.5 Hz)
 //   - LED[14:3] : SW[0]=0 时显示 dbg_pc[15:4]，SW[0]=1 时显示 dbg_pc[27:16]
 //   - LED[15]   : dbg_illegal 未捕获非法指令锁存告警
 // ============================================================================
@@ -74,6 +76,7 @@ module top_nexys4_ddr (
 
   // ---- 时钟生成 IP (Vivado Clocking Wizard) ----
   wire clk_200m;
+  wire clk_100m;
   wire clk_25m;
   wire clk_24m;
   wire mmcm_locked;
@@ -84,6 +87,7 @@ module top_nexys4_ddr (
     .clk_200m (clk_200m),
     .clk_25m  (clk_25m),
     .clk_24m  (clk_24m),
+    .clk_100m (clk_100m),
     .locked   (mmcm_locked)
   );
 
@@ -174,10 +178,10 @@ module top_nexys4_ddr (
   );
 
   // ---- 各时钟域复位同步 ----
-  // SoC 主时钟 (ui_clk = 75 MHz): 等待 MMCM 锁定且 MIG 完成 DDR2 校准后释放复位
-  wire soc_rst_raw = ui_clk_sync_rst || !mmcm_locked || !init_calib_complete;
+  // SoC 主时钟 (clk_100m = 100 MHz): 等待 MMCM 锁定、MIG 脱离复位且 DDR2 校准完成后释放
+  wire soc_rst_raw = !CPU_RESETN || !mmcm_locked || ui_clk_sync_rst || !init_calib_complete;
   (* ASYNC_REG = "TRUE" *) reg [1:0] soc_rst_sync;
-  always @(posedge ui_clk or posedge soc_rst_raw) begin
+  always @(posedge clk_100m or posedge soc_rst_raw) begin
     if (soc_rst_raw) soc_rst_sync <= 2'b11;
     else             soc_rst_sync <= {soc_rst_sync[0], 1'b0};
   end
@@ -192,14 +196,14 @@ module top_nexys4_ddr (
   end
   wire vga_rst = vga_rst_sync[1];
 
-  // ---- 32-bit 主存 <-> MIG 128-bit Native 桥 ----
+  // ---- 100 MHz SoC <-> 75 MHz MIG 128-bit 异步 FIFO 解耦桥 ----
   wire        ram_req, ram_we, ram_ack, ram_err;
   wire [31:0] ram_addr, ram_wdata, ram_rdata;
   wire [3:0]  ram_wstrb;
 
   mig_ddr2_bridge u_mig_bridge (
-    .clk                 (ui_clk),
-    .rst                 (ui_clk_sync_rst),
+    .sys_clk             (clk_100m),
+    .sys_rst             (soc_rst),
     .ram_req             (ram_req),
     .ram_we              (ram_we),
     .ram_addr            (ram_addr),
@@ -208,6 +212,8 @@ module top_nexys4_ddr (
     .ram_ack             (ram_ack),
     .ram_rdata           (ram_rdata),
     .ram_err             (ram_err),
+    .mig_clk             (ui_clk),
+    .mig_rst             (ui_clk_sync_rst),
     .init_calib_complete (init_calib_complete),
     .app_addr            (app_addr),
     .app_cmd             (app_cmd),
@@ -241,13 +247,13 @@ module top_nexys4_ddr (
 
   rv32_soc #(
     .RESET_PC        (`SOC_ROM_BASE),
-    .CLK_HZ          (75_000_000),
+    .CLK_HZ          (100_000_000),
     .BAUD_HZ         (115_200),
-    .CLINT_TICK_DIV  (75),          // 1 MHz 标准 timebase (供 Linux/OpenSBI 使用)
-    .SPI_DEFAULT_DIV (16'd188),     // ~200 kHz SD 卡初始化时钟
+    .CLINT_TICK_DIV  (100),         // 1 MHz 标准 timebase (供 Linux/OpenSBI 使用)
+    .SPI_DEFAULT_DIV (16'd250),     // 200 kHz SD 卡初始化时钟 (100M / (2*250))
     .SCCB_HZ         (100_000)
   ) u_soc (
-    .clk               (ui_clk),
+    .clk               (clk_100m),
     .rst               (soc_rst),
     .ram_req           (ram_req),
     .ram_we            (ram_we),
@@ -297,11 +303,11 @@ module top_nexys4_ddr (
     .uart_tx_byte      ()
   );
 
-  // ---- 心跳与板载 LED 诊断 ----
+  // ---- 心跳与板载 LED 诊断 (clk_100m 域，~1.49 Hz) ----
   reg [25:0] hb_cnt;
-  always @(posedge ui_clk or posedge ui_clk_sync_rst) begin
-    if (ui_clk_sync_rst) hb_cnt <= 26'd0;
-    else                 hb_cnt <= hb_cnt + 26'd1;
+  always @(posedge clk_100m or posedge soc_rst) begin
+    if (soc_rst) hb_cnt <= 26'd0;
+    else         hb_cnt <= hb_cnt + 26'd1;
   end
 
   assign LED[0]    = init_calib_complete;

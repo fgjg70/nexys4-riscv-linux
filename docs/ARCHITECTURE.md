@@ -9,8 +9,8 @@
 | 资源 | 规格（Digilent Nexys 4 DDR） |
 |---|---|
 | FPGA | Artix-7 `xc7a100tcsg324-1`（63,400 LUT / 126,800 FF / 135 BRAM36 / 240 DSP48E1） |
-| 主时钟 | 100 MHz（`E3`）→ `clk_wiz_0` 生成 200 MHz（MIG）、25 MHz（VGA）、24 MHz（OV5640 XCLK） |
-| 外置主存 | **128 MB DDR2**（`MT47H64M16HR-25E`，Vivado MIG 7 Series 4:1 PHY，`ui_clk = 75 MHz`，128-bit Native） |
+| 主时钟 | 100 MHz（`E3`）→ `clk_wiz_0`（VCO=1200 MHz 整数分频）生成 **100 MHz（SoC 主时钟）**、200 MHz（MIG）、25 MHz（VGA）、24 MHz（OV5640 XCLK） |
+| 外置主存 | **128 MB DDR2**（`MT47H64M16HR-25E`，Vivado MIG 7 Series 4:1 PHY，`ui_clk = 75 MHz`，经 `mig_ddr2_bridge` 128-bit 双异步 FIFO 与 100 MHz SoC 解耦） |
 | 显示接口 | 板载 **12-bit VGA**（`VGA_R[3:0]`, `VGA_G[3:0]`, `VGA_B[3:0]`, `VGA_HS`, `VGA_VS`，640×480@60 Hz） |
 | 摄像头接口 | **Pmod OV5640** 接 **`JA + JB`**（24 MHz `XCLK`，16-bit SCCB `0x3C`，`cam_pclk` 格雷码 `async_fifo` 采集） |
 | 串口与存储 | USB-UART（FT2232HQ，`C4`/`D4`）、microSD 卡槽（SPI Mode 0：`E2`/`A1`/`B1`/`C1`/`C2`/`D2`） |
@@ -40,16 +40,16 @@
 
 1. **单发射优于顺序双发射**：在 FPGA 布线受限且面向 Linux 访存/分支密集型负载的条件下，单发射核主频更高、面积更小、MMU/Cache 精确异常验证复杂度远低于顺序双发射。
 2. **路线 A → 路线 B 防返工约束（已全部在硬件中落地）**：
-   - **I/D-Cache 按 4 KB/路设计**：索引 `addr[11:5]` 严格位于 4 KB 页内偏移内，后续接入 Sv32 TLB 时天然 VIPT 无别名；`data_ram` 采用独立无复位块推断为 `RAMB36E1`，`tag_ram` 采用分布式 RAM 预计算 `q_hit_r` 消除关键路径；
+   - **I/D-Cache 按 4 KB/路（8 KB 2 路 VIPT）+ 256 B 0 拍直写 L0D 设计**：I-Cache 采用 64 组 × 64 B × 2 路（`addr[11:6]` 页内索引 + 21-bit 单级 `RAM64M` `{valid, tag}`），D-Cache 采用 128 组 × 32 B × 2 路（`addr[11:5]` 页内索引，全部严格落在 4 KB 页内偏移内，后续接入 Sv32 TLB 时天然 VIPT 无别名）；每路 `data_ram` 采用独立无复位块推断为 `RAMB36E1`（I/D 共 4×`RAMB36E1`），L0D 为 64 字单级原生 `RAM64M` 异步读/WB 提交直写，将 Load-Use 从 2 拍砍为 1 拍（`dist=2` 零气泡）；
    - **IF / LSU 统一走多周期握手与精确故障信号**，B 阶段可直接在核与 Cache 间插入 ITLB/DTLB + PTW；
-   - **BTB 补齐完整 32 位高位 Tag 并引出单拍 `flush_all`**（A 接 `FENCE.I`，B 追加 `SFENCE.VMA`）；
+   - **混合 RAM 分支预测套件**：128 项分布式 RAM 全 32-bit Tag Taken-Only BTB + **8,192 项单块 `RAMB18E1` 同步 Bimodal BHT**（由 `pc_next` 提前一拍预读、停顿由 `pred_en = rst || !pc_hold_sel` 锁定，零额外延迟且随流水线透传 `pred_ctr` 根除 stall 污染）+ 默认启用 16 项循环 RAS + `flush_all`（A 接 `FENCE.I`，B 追加 `SFENCE.VMA`）；
    - **RV32A `res_valid` 在 Trap / `MRET` 及同址普通写时清零**；
    - **外设严格采用 Linux 主线标准寄存器布局**：CLINT + PLIC + NS16550A + SPI Mode 0 microSD。
 3. **可选 `DIV_RADIX4` 宏**：基-4 除法器（32→16 步）已保留在 `rtl/cpu/muldiv.v` 中，24/24 双模式回归均通过。
 
 ---
 
-## 4. Vivado 2018.3 `xc7a100tcsg324-1` 实测与时序演进
+## 4. Vivado `xc7a100tcsg324-1` 实测与时序演进
 
 | 迭代轮次 | 优化措施 | LUT | FF | BRAM36 Tile | DSP48 | Post-Route `sys_clk` |
 |---|---|---|---|---|---|---|
@@ -58,9 +58,11 @@
 | 三轮优化 | `plic.irq_ext` 与 `clint.irq_timer` 增加 1 拍输出寄存器 | 6,342 (10.00%) | 3,951 | 8 (5.93%) | 8 | 67.6 MHz |
 | 四轮基线 (`a957b1a`) | 精简 `fwd_wb_data` + 低 2 位 `insn_misalign` + 预计算 `irq_vector` | 6,358 (10.03%) | 3,951 (3.12%) | 8 (5.93%) | 8 (3.33%) | 79.05 MHz |
 | 第一轮单模块审计 | 统一 33×33 乘法器（DSP 减半）、ALU/分支共享比较器、16 项循环 RAS、NS16550A `thre_ip`、全 CDC `ASYNC_REG`、`ODDR` `CAM_XCLK` | 6,132 (9.67%) | 3,917 (3.09%) | 8 (5.93%) | **4 (1.67%)** | 77.72 MHz |
-| **第二轮全路径优化** | **BTB 元数据打包 `RAMB18E1` + 后台清零、EX 归并 `WB_PC4`、I-Cache 直出 `data_q` + `q_cacheable_r`、分支非对齐/非法 1 拍寄存陷阱、7-bit `id_sys_stall`、`hazard_unit` 末级门控、`mig_ddr2_bridge` 128-bit 读行缓冲** | **5,742 (9.06%)** | **3,427 (2.70%)** | **8 (5.93%)** | **4 (1.67%)** | **93.36 MHz**（相对 MIG 75 MHz **+2.622 ns** 正裕量） |
+| 第二轮全路径优化 (`e806489`, Vivado 2018.3) | BTB 元数据打包 `RAMB18E1` + 后台清零、EX 归并 `WB_PC4`、I-Cache 直出 `data_q` + `q_cacheable_r`、分支非对齐/非法 1 拍寄存陷阱、7-bit `id_sys_stall`、`hazard_unit` 末级门控、`mig_ddr2_bridge` 128-bit 读行缓冲 | 5,742 (9.06%) | 3,427 (2.70%) | 8 (5.93%) | 4 (1.67%) | 93.36 MHz |
+| 第三轮微架构升级 (Vivado 2023.2) | 128 项分布式 RAM Taken-Only BTB + 512 项 Bimodal + 默认 16 项 RAS、8 KB 2 路 VIPT I/D-Cache、256 B 单级 `RAM64M` 0 拍直写 L0D（Load-Use 2→1 拍）、LSU 拆分尾址寄存化、`id_ex_reg` 控制/数据 CE 解耦、PLIC 3 级平衡锦标赛树 | 8,322 (13.13%) | 4,265 (3.36%) | 8.5 (6.30%) | 4 (1.67%) | 90.60 MHz（`soc_test` 84,878 周期） |
+| **第四轮 100 MHz 突破 + 8K BRAM BHT + 异频 DDR2 解耦 (Vivado 2023.2)** | **I-Cache 64 组×64 B (`RAM64M` 21b `{vld,tag}` + `S_FLUSH` + 单级 LUT5 `ibus_rdata`)、`dcache` 纯 FF `dbus_stall_r`/`dbus_fault_r` + 移除 `wb_fault`/`mem_fault` 冗余 `!dbus_stall`、8,192 项单 `RAMB18E1` 同步 Bimodal BHT (`pc_next` 预读)、`u_ras` 剥离条件分支比较器、`id_ex_reg` 272-bit CE 拆扇出、`mig_ddr2_bridge` 100↔75 MHz 128-bit 双异步 FIFO + Posted Write** | **7,315 (11.54%)**（-1,007 LUT） | **3,943 (3.11%)**（-322 FF） | **9.0 (6.67%)**（+桥 4.5 = 13.5） | **4 (1.67%)** | **100.52 MHz**（**`WNS = +0.052 ns`, `TNS = 0`, 0 违例**；实板 100 MHz + 128b 异步 FIFO 解耦 75 MHz DDR2，较 Round 2 实板墙钟提速 **~1.49×**） |
 
-完整两轮设计空间评估、缺陷修复与六大路径剖析详见 [docs/AUDIT_OPTIMIZATION.md](AUDIT_OPTIMIZATION.md)。
+完整四轮设计空间评估、缺陷修复与关键路径剖析详见 [docs/AUDIT_OPTIMIZATION.md](AUDIT_OPTIMIZATION.md)。
 
 ---
 

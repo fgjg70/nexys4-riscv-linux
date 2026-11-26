@@ -8,7 +8,8 @@
 //   2) vga_ctrl       : 640×480@60Hz VESA 整帧 HS/VS 时序、8 色彩条、RGB565 流模式、VSYNC CDC 中断
 //   3) ov5640_sccb    : 真实 16-bit 寄存器地址 SCCB 开漏写 + 两段式读回 + ACK 校验
 //   4) ov5640_capture : 真实异步 cam_pclk(33.3MHz)->sys_clk(50MHz) RGB565 打包 + async_fifo 弹出 + 帧中断
-//   5) mig_ddr2_bridge: 128-bit Native MIG 随机独立 app_rdy/app_wdf_rdy 反压 + 全 4 lane + 字节掩码读写
+//   5) mig_ddr2_bridge: 真实异步 100 MHz <-> 75 MHz 128-bit 双异步 FIFO 解耦桥 + 随机反压 +
+//                       Posted Write 满队反压 + 严格写后读保序 + 4x 读行缓冲 + 字节掩码读写
 // ============================================================================
 
 module tb_periph_stage2;
@@ -18,15 +19,23 @@ module tb_periph_stage2;
   reg vga_clk;
   reg vga_rst;
   reg cam_pclk;
+  reg mig_sys_clk;
+  reg mig_sys_rst;
+  reg mig_clk;
+  reg mig_rst;
 
   initial begin
-    sys_clk  = 1'b0;
-    vga_clk  = 1'b0;
-    cam_pclk = 1'b0;
+    sys_clk     = 1'b0;
+    vga_clk     = 1'b0;
+    cam_pclk    = 1'b0;
+    mig_sys_clk = 1'b0;
+    mig_clk     = 1'b0;
   end
-  always #10 sys_clk  = ~sys_clk;   // 50.0 MHz
-  always #20 vga_clk  = ~vga_clk;   // 25.0 MHz
-  always #15 cam_pclk = ~cam_pclk;  // 33.3 MHz (与 sys_clk 真正异步)
+  always #10    sys_clk     = ~sys_clk;      // 50.0 MHz
+  always #20    vga_clk     = ~vga_clk;      // 25.0 MHz
+  always #15    cam_pclk    = ~cam_pclk;     // 33.3 MHz (与 sys_clk 真正异步)
+  always #5     mig_sys_clk = ~mig_sys_clk;  // 100.0 MHz (Round 4 SoC 主频)
+  always #6.667 mig_clk     = ~mig_clk;      // 75.0 MHz (MIG ui_clk, 与 100 MHz 真正异步)
 
   integer fail_cnt;
 
@@ -375,8 +384,8 @@ module tb_periph_stage2;
   reg          app_rd_data_valid;
 
   mig_ddr2_bridge u_mig_br (
-    .clk                 (sys_clk),
-    .rst                 (sys_rst),
+    .sys_clk             (mig_sys_clk),
+    .sys_rst             (mig_sys_rst),
     .ram_req             (br_req),
     .ram_we              (br_we),
     .ram_addr            (br_addr),
@@ -385,6 +394,8 @@ module tb_periph_stage2;
     .ram_ack             (br_ack),
     .ram_rdata           (br_rdata),
     .ram_err             (br_err),
+    .mig_clk             (mig_clk),
+    .mig_rst             (mig_rst),
     .init_calib_complete (mig_calib),
     .app_addr            (app_addr),
     .app_cmd             (app_cmd),
@@ -399,7 +410,7 @@ module tb_periph_stage2;
     .app_rd_data_valid   (app_rd_data_valid)
   );
 
-  // 行为 128-bit DDR2 MIG 存储 (64 个 128-bit 突发块 = 1 KB, 独立跟踪命令与写数据 FIFO)
+  // 行为 128-bit DDR2 MIG 存储 (工作在 75 MHz mig_clk 域, 64 个 128-bit 突发块 = 1 KB)
   reg [127:0] ddr_mem [0:63];
   reg [7:0]   lfsr;
   reg         wr_cmd_pend, wr_dat_pend;
@@ -411,8 +422,8 @@ module tb_periph_stage2;
   integer     bi, mi;
   integer     mig_rd_cmd_cnt;
 
-  always @(posedge sys_clk or posedge sys_rst) begin
-    if (sys_rst) begin
+  always @(posedge mig_clk or posedge mig_rst) begin
+    if (mig_rst) begin
       lfsr              <= 8'h5A;
       app_rdy           <= 1'b0;
       app_wdf_rdy       <= 1'b0;
@@ -488,11 +499,11 @@ module tb_periph_stage2;
     input [31:0] d;
     input [3:0]  s;
     begin
-      @(negedge sys_clk);
+      @(negedge mig_sys_clk);
       br_req = 1'b1; br_we = 1'b1; br_addr = a; br_wdata = d; br_wstrb = s;
-      @(posedge sys_clk);
-      while (!br_ack) @(posedge sys_clk);
-      @(negedge sys_clk);
+      @(posedge mig_sys_clk);
+      while (!br_ack) @(posedge mig_sys_clk);
+      @(negedge mig_sys_clk);
       br_req = 1'b0; br_we = 1'b0;
     end
   endtask
@@ -501,12 +512,12 @@ module tb_periph_stage2;
     input  [31:0] a;
     output [31:0] d;
     begin
-      @(negedge sys_clk);
+      @(negedge mig_sys_clk);
       br_req = 1'b1; br_we = 1'b0; br_addr = a; br_wdata = 32'd0; br_wstrb = 4'h0;
-      @(posedge sys_clk);
-      while (!br_ack) @(posedge sys_clk);
+      @(posedge mig_sys_clk);
+      while (!br_ack) @(posedge mig_sys_clk);
       d = br_rdata;
-      @(negedge sys_clk);
+      @(negedge mig_sys_clk);
       br_req = 1'b0;
     end
   endtask
@@ -522,6 +533,8 @@ module tb_periph_stage2;
     fail_cnt      = 0;
     sys_rst       = 1'b1;
     vga_rst       = 1'b1;
+    mig_sys_rst   = 1'b1;
+    mig_rst       = 1'b1;
     spi_req       = 1'b0; spi_we = 1'b0; spi_addr = 32'd0; spi_wdata = 32'd0;
     vga_req       = 1'b0; vga_we = 1'b0; vga_addr = 32'd0; vga_wdata = 32'd0;
     vga_px_rgb565 = 16'hF800; // 纯红 RGB565 -> RGB444 = 0xF00
@@ -531,8 +544,11 @@ module tb_periph_stage2;
     mig_calib     = 1'b0;
 
     repeat (6) @(posedge sys_clk);
-    sys_rst = 1'b0;
-    vga_rst = 1'b0;
+    sys_rst     = 1'b0;
+    vga_rst     = 1'b0;
+    mig_rst     = 1'b0;
+    repeat (4) @(posedge mig_sys_clk);
+    mig_sys_rst = 1'b0;
 
     // ------------------------------------------------------------------------
     // Test 1: SPI Master Mode 0 环回 + 控制引脚 + W1C IRQ
@@ -701,21 +717,21 @@ module tb_periph_stage2;
     check_eq(rd_val, 32'd0, "cam_fifo_clr_empty");
 
     // ------------------------------------------------------------------------
-    // Test 5: MIG 7 Series 128-bit Native 桥随机反压 + 4x 读行缓冲 + 写命中失效
+    // Test 5: MIG 7 Series 100MHz<->75MHz 异步 FIFO 桥 + 满队反压 + 4x 读行缓冲 + 保序
     // ------------------------------------------------------------------------
-    $display("[stage2] 5/5 Testing mig_ddr2_bridge (backpressure + 128b read-line buffer)...");
+    $display("[stage2] 5/5 Testing mig_ddr2_bridge (100MHz<->75MHz async FIFO + backpressure + 128b rd_buf)...");
     mig_calib = 1'b1;
     // 写入 16 个连续 32-bit 字 (覆盖 4 个 128-bit 突发块 × 全部 4 个 lane)
     for (k = 0; k < 16; k = k + 1) begin
       mig_wr(32'h8000_0000 + (k * 4), 32'hC0DE_0000 ^ (k * 32'h0102_0304), 4'b1111);
     end
-    // 部分字节掩码改写 (验证 app_wdf_mask 在各个 lane 均精确有效)
+    // 部分字节掩码改写 (第 17..20 次写超过 16 项 FIFO 深度，同步压测 req_wr_full 反压!)
     mig_wr(32'h8000_0000, 32'h0000_5500, 4'b0010); // lane 0 byte 1 -> 0x55
     mig_wr(32'h8000_0004, 32'hAA00_0000, 4'b1000); // lane 1 byte 3 -> 0xAA
     mig_wr(32'h8000_0008, 32'h00BB_0000, 4'b0100); // lane 2 byte 2 -> 0xBB
     mig_wr(32'h8000_000C, 32'h0000_00CC, 4'b0001); // lane 3 byte 0 -> 0xCC
 
-    // 读回校验全部 16 个字，同时验证 128-bit 读行缓冲将 16 次字读压缩为精确 4 次 MIG 读突发!
+    // 读回校验全部 16 个字，同时验证 100MHz 侧 128-bit 读行缓冲压缩为精确 4 次 MIG 读突发!
     rd_cnt_before = mig_rd_cmd_cnt;
     for (k = 0; k < 16; k = k + 1) begin : verify_mig
       reg [31:0] exp_w;
@@ -737,6 +753,24 @@ module tb_periph_stage2;
     mig_rd(32'h8000_003C, rd_val);
     check_eq(rd_val, 32'hC0DE_0000 ^ (15 * 32'h0102_0304), "mig_rd_buf_refill_hit");
     check_eq(mig_rd_cmd_cnt - rd_cnt_before, 32'd1, "mig_rd_buf_1_refetch");
+
+    // 突发 24 次 Posted Write 压测 (深度 16 连续满队反压 + 紧接读回严格保序 + 精确 6 次 MIG 读突发)
+    for (k = 0; k < 24; k = k + 1) begin
+      mig_wr(32'h8000_0040 + (k * 4), 32'hA5A5_0000 ^ (k * 32'h1122_3344), 4'b1111);
+    end
+    rd_cnt_before = mig_rd_cmd_cnt;
+    for (k = 0; k < 24; k = k + 1) begin
+      mig_rd(32'h8000_0040 + (k * 4), rd_val);
+      check_eq(rd_val, 32'hA5A5_0000 ^ (k * 32'h1122_3344), "mig_cdc_burst_order");
+    end
+    check_eq(mig_rd_cmd_cnt - rd_cnt_before, 32'd6, "mig_cdc_burst_6x_rd");
+
+    // 同址写->读->写->读高频交替压测 (验证 100MHz<->75MHz 连续相位滑移下零陈旧数据)
+    for (k = 0; k < 8; k = k + 1) begin
+      mig_wr(32'h8000_00A0, 32'hFACE_0000 + k, 4'b1111);
+      mig_rd(32'h8000_00A0, rd_val);
+      check_eq(rd_val, 32'hFACE_0000 + k, "mig_cdc_wr_rd_toggle");
+    end
 
     if (fail_cnt == 0) begin
       $display("=================================================");
